@@ -1,10 +1,10 @@
-# WikiSplice
+# wikisplice
 
-A powerful tool for creating dynamic video collages from Wikipedia search results. WikiSplice searches Wikipedia for a given term, captures screenshots of matching text on relevant pages, and automatically generates an After Effects composition with precisely centered, animated sequences.
+A powerful tool for creating dynamic video collages from Wikipedia search results. wikisplice searches Wikipedia for a given term, captures screenshots of matching text on relevant pages, and automatically generates an After Effects composition with precisely centered, animated sequences.
 
 ## What It Does
 
-WikiSplice performs the following workflow:
+wikisplice performs the following workflow:
 
 1. **Search Wikipedia** - Uses the MediaWiki API to find pages containing your search term
 2. **Capture Screenshots** - Opens each page with Playwright, highlights matching text, and captures cropped screenshots centered on the matches
@@ -154,7 +154,7 @@ wiki_collage/
 
 ## Mathematical Symbol Support
 
-WikiSplice automatically recognizes mathematical symbols and expands searches to include LaTeX equivalents:
+wikisplice automatically recognizes mathematical symbols and expands searches to include LaTeX equivalents:
 
 - `∫` → searches for `\int`
 - `∑` → searches for `\sum`
