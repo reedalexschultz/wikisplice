@@ -1,0 +1,7 @@
+python wikisplice.py --term "Calculus" \
+  --framing-zoom 4.00 \
+  --target-word-px 810 \
+  --center-eps-px 0.05 --center-max-iter 18 \
+  --pad-to-center \
+  --max-total-matches 20 --max-matches-per-page 10 \
+  --width 1920 --height 1920 --dpr 5.0 --fps 60 --speed 0.05 --run-ae
