@@ -26,10 +26,10 @@ playwright install chromium
 ## Basic Usage
 
 ```bash
-python wikisplice.py --term "your search term"
+python wikisplice.py --term "your search term" --run-ae
 ```
 
-This will create a `wiki_collage` directory with screenshots and an After Effects JSX script.
+This will create a `wiki_collage` directory with screenshots and an After Effects JSX script, and will run the JSX in After Effects Automatically.
 
 ## Command Line Arguments
 
