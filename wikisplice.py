@@ -157,6 +157,10 @@ MARK_MATCHES_JS = r"""
     if (!highlightAll && maxMatches && ids.length >= maxMatches) break;
 
     const n = walker.currentNode;
+    const isVisible = (n instanceof Element)
+        ? n.checkVisibility()
+        : n.parentElement.checkVisibility();
+    if (!isVisible) continue;
     let t = normalizeSpaces(n.nodeValue || '');
     if (!t) continue;
 
