@@ -297,8 +297,8 @@ def capture_wiki_screenshots(
 
             # Hide chrome + transparent background
             page.evaluate("""() => {
-                const hide = id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; };
-                hide('mw-panel'); hide('vector-toc'); hide('siteNotice');
+                const hide = sel => { Array.from(document.querySelectorAll(sel)).forEach((el) => el.style.display = 'none'); };
+                hide('#mw-panel'); hide('#vector-toc'); hide('#siteNotice'); hide('.vector-page-toolbar');
                 const html = document.documentElement;
                 const body = document.body;
                 html.style.background = 'transparent';
