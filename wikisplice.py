@@ -157,6 +157,10 @@ MARK_MATCHES_JS = r"""
     if (!highlightAll && maxMatches && ids.length >= maxMatches) break;
 
     const n = walker.currentNode;
+    const isVisible = (n instanceof Element)
+        ? n.checkVisibility()
+        : n.parentElement.checkVisibility();
+    if (!isVisible) continue;
     let t = normalizeSpaces(n.nodeValue || '');
     if (!t) continue;
 
@@ -293,8 +297,8 @@ def capture_wiki_screenshots(
 
             # Hide chrome + transparent background
             page.evaluate("""() => {
-                const hide = id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; };
-                hide('mw-panel'); hide('vector-toc'); hide('siteNotice');
+                const hide = sel => { Array.from(document.querySelectorAll(sel)).forEach((el) => el.style.display = 'none'); };
+                hide('#mw-panel'); hide('#vector-toc'); hide('#siteNotice'); hide('.vector-page-toolbar');
                 const html = document.documentElement;
                 const body = document.body;
                 html.style.background = 'transparent';
