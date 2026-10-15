@@ -1,9 +1,12 @@
 @echo off
 rem Double-click this file (Windows) to open WikiSplice.
 cd /d "%~dp0"
-if not exist ".venv\Scripts\python.exe" (
-  echo First-time setup: creating a private Python environment...
-  py -3 -m venv .venv 2>nul || python -m venv .venv
+rem Rebuild the environment if its Python no longer runs (e.g. after a Python upgrade)
+".venv\Scripts\python.exe" -c "import sys" 2>nul
+if errorlevel 1 (
+  echo Setting up a private Python environment...
+  py -3 -m venv --clear .venv 2>nul || python -m venv --clear .venv
+  ".venv\Scripts\python.exe" -c "import sys" 2>nul
   if errorlevel 1 (
     echo Python 3 isn't installed. Get it from https://www.python.org/downloads/ then try again.
     pause

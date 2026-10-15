@@ -295,7 +295,7 @@ def main() -> None:
         sys.exit("Could not find a free port.")
 
     url = f"http://127.0.0.1:{port}"
-    print(f"\n  WikiSplice is running at {url}\n  (Leave this window open. Close it or press Ctrl+C to quit.)\n")
+    print(f"\n  WikiSplice is running at {url}\n  (Leave this window open. Close it or press Ctrl+C to quit.)\n", flush=True)
     if not args.no_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:

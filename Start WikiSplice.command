@@ -3,8 +3,14 @@
 # First run sets everything up automatically (takes a few minutes).
 cd "$(dirname "$0")" || exit 1
 
-if [ ! -x ".venv/bin/python" ]; then
-  echo "First-time setup: creating a private Python environment..."
+# Check the environment's Python actually runs: it breaks when Homebrew upgrades
+# Python and removes the old version, even though the file is still there.
+if ! .venv/bin/python -c "import sys" >/dev/null 2>&1; then
+  if [ -d ".venv" ]; then
+    echo "Python was updated since last time; rebuilding WikiSplice's Python environment..."
+  else
+    echo "First-time setup: creating a private Python environment..."
+  fi
   if ! command -v python3 >/dev/null 2>&1; then
     echo ""
     echo "Python 3 isn't installed. Download it from https://www.python.org/downloads/"
@@ -12,7 +18,14 @@ if [ ! -x ".venv/bin/python" ]; then
     read -n 1 -s -r -p "Press any key to close."
     exit 1
   fi
-  python3 -m venv .venv || { read -n 1 -s -r -p "Setup failed. Press any key to close."; exit 1; }
+  python3 -m venv --clear .venv || { read -n 1 -s -r -p "Setup failed. Press any key to close."; exit 1; }
+  if ! .venv/bin/python -c "import sys" >/dev/null 2>&1; then
+    rm -rf .venv && python3 -m venv .venv
+  fi
+  if ! .venv/bin/python -c "import sys" >/dev/null 2>&1; then
+    read -n 1 -s -r -p "Couldn't set up Python. Press any key to close."
+    exit 1
+  fi
 fi
 
 if ! .venv/bin/python -c "import playwright, requests" >/dev/null 2>&1; then

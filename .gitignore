@@ -1,3 +1,5 @@
 .venv/
 
 wiki_collage/
+__pycache__/
+.DS_Store
