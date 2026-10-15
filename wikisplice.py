@@ -133,6 +133,122 @@ def wiki_search_batch(term: str, limit: int = 20, offset: int = 0, *, search_in:
 
 
 # ------------------------------
+# Sports blog search (web search restricted to sports sites)
+# ------------------------------
+DEFAULT_SPORTS_SITES = [
+    "espn.com",
+    "bleacherreport.com",
+    "sbnation.com",
+    "si.com",
+    "cbssports.com",
+    "sports.yahoo.com",
+    "foxsports.com",
+    "nbcsports.com",
+    "theringer.com",
+    "fansided.com",
+    "barstoolsports.com",
+    "thebiglead.com",
+]
+
+BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+)
+
+
+def _host_matches(url: str, sites: List[str]) -> Optional[str]:
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    for s in sites:
+        s = s.lower().strip()
+        if host == s or host.endswith("." + s):
+            return s
+    return None
+
+
+def _ddg_search(query: str) -> List[Tuple[str, str]]:
+    """DuckDuckGo HTML endpoint (no API key)."""
+    import html as htmlmod
+    import requests
+    r = requests.post("https://html.duckduckgo.com/html/", data={"q": query},
+                      headers={"User-Agent": BROWSER_UA}, timeout=30)
+    r.raise_for_status()
+    out: List[Tuple[str, str]] = []
+    for href, label in re.findall(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', r.text, flags=re.S):
+        href = htmlmod.unescape(href)
+        if "duckduckgo.com/l/" in href:  # redirect wrapper
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
+            href = qs.get("uddg", [href])[0]
+        if href.startswith("//"):
+            href = "https:" + href
+        if "duckduckgo.com" in href:  # ads
+            continue
+        title = htmlmod.unescape(re.sub(r"<[^>]+>", "", label)).strip()
+        out.append((title or href, href))
+    return out
+
+
+def _bing_search(query: str) -> List[Tuple[str, str]]:
+    """Bing web search RSS feed (fallback, no API key)."""
+    import requests
+    import xml.etree.ElementTree as ET
+    r = requests.get("https://www.bing.com/search", params={"q": query, "format": "rss", "count": 30},
+                     headers={"User-Agent": BROWSER_UA}, timeout=30)
+    r.raise_for_status()
+    out: List[Tuple[str, str]] = []
+    for item in ET.fromstring(r.content).iter("item"):
+        link = (item.findtext("link") or "").strip()
+        title = (item.findtext("title") or "").strip()
+        if link:
+            out.append((title or link, link))
+    return out
+
+
+def sports_search(term: str, sites: Optional[List[str]] = None, max_results: int = 40) -> List[Tuple[str, str]]:
+    """
+    Find articles about `term` on sports blogs/news sites.
+    Queries a few sites at a time and interleaves results so you get variety.
+    """
+    import time
+    sites = [s.strip() for s in (sites or DEFAULT_SPORTS_SITES) if s.strip()]
+    by_site: dict = {s: [] for s in sites}
+    seen = set()
+    chunk = 3
+    for k in range(0, len(sites), chunk):
+        group = sites[k:k + chunk]
+        query = _quote_for_search(term) + " (" + " OR ".join(f"site:{s}" for s in group) + ")"
+        results: List[Tuple[str, str]] = []
+        for engine in (_ddg_search, _bing_search):
+            try:
+                results = engine(query)
+            except Exception as e:
+                print(f"[warn] {engine.__name__.strip('_')} failed: {e}")
+                results = []
+            if results:
+                break
+        for title, url in results:
+            site = _host_matches(url, group)
+            key = url.split("#")[0].rstrip("/")
+            if not site or key in seen or url.lower().endswith(".pdf"):
+                continue
+            seen.add(key)
+            by_site[site].append((title, url))
+        time.sleep(1.0)  # be polite to the search engines
+
+    # Round-robin across sites so one site doesn't dominate
+    out: List[Tuple[str, str]] = []
+    while len(out) < max_results and any(by_site.values()):
+        for s in sites:
+            if by_site[s] and len(out) < max_results:
+                out.append(by_site[s].pop(0))
+    print(f"[search] Found {len(out)} sports articles for '{term}'")
+    return out
+
+
+def _is_wikipedia(url: str) -> bool:
+    return (urllib.parse.urlparse(url).hostname or "").endswith("wikipedia.org")
+
+
+# ------------------------------
 # DOM helpers (injected JS)
 # ------------------------------
 WAIT_FONTS_JS = r"""
@@ -150,17 +266,25 @@ MARK_MATCHES_JS = r"""
   function isWordChar(ch) { return !!ch && /[\p{L}\p{N}_]/u.test(ch); }
   function normalizeSpaces(str) { return String(str).replace(/[\s\u00A0]/g, ' '); }
 
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  // Only visible, real text (not <script> JSON, hidden menus, etc.)
+  const SKIP = new Set(['SCRIPT','STYLE','NOSCRIPT','TEXTAREA','TEMPLATE','TITLE','IFRAME','OPTION','SELECT']);
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+    acceptNode(n) {
+      const p = n.parentElement;
+      if (!p || SKIP.has(p.tagName.toUpperCase())) return NodeFilter.FILTER_REJECT;
+      if (!p.getClientRects().length) return NodeFilter.FILTER_REJECT;
+      if (p.checkVisibility && !p.checkVisibility({visibilityProperty: true})) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  });
+  // Collect first: replacing nodes mid-walk would end the walk after the first match.
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
   const ids = [];
 
-  while (walker.nextNode()) {
+  for (const n of nodes) {
     if (!highlightAll && maxMatches && ids.length >= maxMatches) break;
 
-    const n = walker.currentNode;
-    const isVisible = (n instanceof Element)
-        ? n.checkVisibility()
-        : n.parentElement.checkVisibility();
-    if (!isVisible) continue;
     let t = normalizeSpaces(n.nodeValue || '');
     if (!t) continue;
 
@@ -218,6 +342,57 @@ MARK_MATCHES_JS = r"""
 })
 """
 
+WIKI_CLEANUP_JS = r"""
+() => {
+  const hide = sel => { Array.from(document.querySelectorAll(sel)).forEach((el) => el.style.display = 'none'); };
+  hide('#mw-panel'); hide('#vector-toc'); hide('#siteNotice'); hide('.vector-page-toolbar');
+  const html = document.documentElement;
+  const body = document.body;
+  html.style.background = 'transparent';
+  html.style.backgroundColor = 'transparent';
+  body.style.background = 'transparent';
+  body.style.backgroundColor = 'transparent';
+}
+"""
+
+# Blogs/news sites: strip cookie banners, popups, sticky headers and ads so the
+# text is unobstructed. (Hides them with CSS; never clicks "accept".)
+BLOG_CLEANUP_JS = r"""
+() => {
+  if (!document.body) return;
+  const style = document.createElement('style');
+  style.textContent = `
+    iframe, video, ins.adsbygoogle,
+    [id*="cookie" i], [class*="cookie" i], [id*="consent" i], [class*="consent" i],
+    [id*="onetrust" i], [class*="onetrust" i], [id^="sp_message" i], [class*="sp_message" i],
+    [class*="paywall" i], [id*="paywall" i], [aria-modal="true"], [role="dialog"],
+    [id^="google_ads" i], [class*="ad-slot" i], [class*="AdSlot" i]
+      { display: none !important; }
+    html, body { overflow: visible !important; height: auto !important; }
+  `;
+  (document.head || document.documentElement).appendChild(style);
+  document.documentElement.classList.remove('no-scroll');
+  document.body.style.setProperty('position', 'static', 'important');
+  for (const el of document.querySelectorAll('body *')) {
+    const pos = getComputedStyle(el).position;
+    if (pos === 'fixed' || pos === 'sticky') el.style.setProperty('display', 'none', 'important');
+  }
+}
+"""
+
+GET_VIEWPORT_RECT_JS = r"""
+(id) => {
+  const el = document.getElementById(id);
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  return { x: r.left, y: r.top, w: r.width, h: r.height };
+}
+"""
+
+SCROLL_TO_CENTER_JS = r"""
+(id) => { const el = document.getElementById(id); if (el) el.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'}); }
+"""
+
 GET_RECT_JS = r"""
 (id) => {
   const el = document.getElementById(id);
@@ -249,6 +424,7 @@ def capture_wiki_screenshots(
     highlight_all: bool = False,
     settle_ms: int = 60,
     max_total_matches: Optional[int] = None,
+    start_index: int = 1,
 ) -> List[dict]:
     if sync_playwright is None:
         raise RuntimeError("playwright not installed. `pip install playwright` and run `playwright install chromium`.")
@@ -279,33 +455,64 @@ def capture_wiki_screenshots(
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
-        context = browser.new_context(viewport={"width": vw, "height": vh}, device_scale_factor=dpr)
+        context = browser.new_context(viewport={"width": vw, "height": vh}, device_scale_factor=dpr, user_agent=BROWSER_UA)
+        # Skip video/audio downloads; they're never in the screenshot and slow pages down.
+        context.route("**/*", lambda route: route.abort() if route.request.resource_type == "media" else route.continue_())
         page = context.new_page()
         page.set_default_timeout(20000)
 
         def page_dims():
             return page.evaluate("() => ({w: document.documentElement.scrollWidth, h: document.documentElement.scrollHeight})")
 
-        for i, (title, url) in enumerate(pages, 1):
+        def blog_shot(mid: str, fpath: str) -> Optional[dict]:
+            """
+            Blogs often scroll inside an inner container, so page coordinates are
+            unreliable. Instead: scroll the word to the middle of the window and
+            crop around it in window coordinates.
+            """
+            r = page.evaluate(GET_VIEWPORT_RECT_JS, mid)
+            if not r or r["w"] <= 0 or r["h"] <= 0:
+                return None
+            cw = max(32.0, vw * (float(r["w"]) / max(1.0, float(target_word_px)))) * max(0.25, float(framing_zoom))
+            cw = q(cw); ch = q(cw / aspect)
+            # Grow the window if the crop is bigger than it (large framing zoom)
+            need = {"width": max(vw, int(cw) + 2), "height": max(vh, int(ch) + 2)}
+            if page.viewport_size != need:
+                page.set_viewport_size(need)
+            for _ in range(2):  # twice: lazy images above can shift the text after the first scroll
+                page.evaluate(SCROLL_TO_CENTER_JS, mid)
+                page.wait_for_timeout(max(settle_ms, 250))
+            r = page.evaluate(GET_VIEWPORT_RECT_JS, mid)
+            if not r or r["w"] <= 0 or r["h"] <= 0:
+                return None
+            cx = float(r["x"]) + float(r["w"]) / 2.0
+            cy = float(r["y"]) + float(r["h"]) / 2.0
+            x = q(max(0.0, min(cx - cw / 2.0, need["width"] - cw)))
+            y = q(max(0.0, min(cy - ch / 2.0, need["height"] - ch)))
+            page.screenshot(path=fpath, clip={"x": x, "y": y, "width": cw, "height": ch})
+            return {"path": fpath, "dx_css": cx - (x + cw / 2.0), "dy_css": cy - (y + ch / 2.0), "cw_css": cw, "ch_css": ch}
+
+        for i, (title, url) in enumerate(pages, start_index):
             if max_total_matches is not None and len(saved) >= max_total_matches:
                 break
+            print(f"[page] {title} — {url}")
+            wiki = _is_wikipedia(url)
+            if page.viewport_size != {"width": vw, "height": vh}:
+                page.set_viewport_size({"width": vw, "height": vh})
             try:
-                page.goto(url, wait_until="domcontentloaded")
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_selector("body", state="attached", timeout=10000)
+                if not wiki:
+                    # Blogs render article text with JS; give them a moment.
+                    try:
+                        page.wait_for_load_state("load", timeout=8000)
+                    except Exception:
+                        pass
+                    page.wait_for_timeout(800)
+                page.evaluate(WIKI_CLEANUP_JS if wiki else BLOG_CLEANUP_JS)
             except Exception as e:
                 print(f"[skip] Failed to load {title}: {e}")
                 continue
-
-            # Hide chrome + transparent background
-            page.evaluate("""() => {
-                const hide = sel => { Array.from(document.querySelectorAll(sel)).forEach((el) => el.style.display = 'none'); };
-                hide('#mw-panel'); hide('#vector-toc'); hide('#siteNotice'); hide('.vector-page-toolbar');
-                const html = document.documentElement;
-                const body = document.body;
-                html.style.background = 'transparent';
-                html.style.backgroundColor = 'transparent';
-                body.style.background = 'transparent';
-                body.style.backgroundColor = 'transparent';
-            }""")
 
             page.evaluate(WAIT_FONTS_JS)
 
@@ -314,13 +521,17 @@ def capture_wiki_screenshots(
                 break
             page_max = int(max_matches_per_page if remaining is None else min(max_matches_per_page, remaining))
 
-            mark_ids = page.evaluate(MARK_MATCHES_JS, {
-                "term": term,
-                "caseSensitive": bool(case_sensitive),
-                "wholeWord": bool(whole_word),
-                "maxMatches": page_max,
-                "highlightAll": bool(highlight_all),
-            })
+            try:
+                mark_ids = page.evaluate(MARK_MATCHES_JS, {
+                    "term": term,
+                    "caseSensitive": bool(case_sensitive),
+                    "wholeWord": bool(whole_word),
+                    "maxMatches": page_max,
+                    "highlightAll": bool(highlight_all),
+                })
+            except Exception as e:
+                print(f"[skip] Could not scan {title}: {e}")
+                continue
             if not mark_ids:
                 print(f"[skip] No matches for '{term}' in {title}")
                 continue
@@ -334,6 +545,18 @@ def capture_wiki_screenshots(
             for j, mid in enumerate(mark_ids, 1):
                 if max_total_matches is not None and len(saved) >= max_total_matches:
                     break
+
+                if not wiki:
+                    fname = f"{i:03d}_{j:02d}_" + _safe_slug(title) + ".png"
+                    try:
+                        shot = blog_shot(mid, _abs(os.path.join(outdir, fname)))
+                    except Exception as e:
+                        print(f"[skip] Screenshot failed on {title}: {e}")
+                        continue
+                    if shot:
+                        saved.append(shot)
+                        print(f"[ok] {title} [{j}/{len(mark_ids)}] -> {fname} (residual: {shot['dx_css']:.3f}, {shot['dy_css']:.3f})")
+                    continue
 
                 r = page.evaluate(GET_RECT_JS, mid)
                 if not r or r["w"] <= 0 or r["h"] <= 0:
@@ -434,7 +657,8 @@ def capture_wiki_screenshots(
                         page.evaluate("(id) => { const el = document.getElementById(id); if (el) el.remove(); }", elem_id)
                         print(f"[ok/element] {title} [{j}/{len(mark_ids)}] -> {fname}")
                     else:
-                        raise
+                        print(f"[skip] Screenshot failed on {title}: {e}")
+                        continue
 
                 saved.append({
                     "path": fpath,
@@ -465,6 +689,7 @@ def write_jsx(
     scale_pct: float = 100.0,
     punch: float = 0.0,
     dpr: float = 3.0,
+    name: str = "WikiCollage",
 ) -> None:
     items = [{
         "path": _abs(d["path"]).replace("\\", "\\\\"),
@@ -488,14 +713,16 @@ def write_jsx(
     layer.property('Position').setValue([compW/2 + shiftX, compH/2 + shiftY]);
   }}
   app.beginUndoGroup('Wiki Collage Centered');
+  try {{
   var proj = getOrCreateProject();
-  var comp = proj.items.addComp('WikiCollage', {width}, {height}, 1.0, {total_dur}, {fps});
-  var folder = proj.items.addFolder('WikiCrops');
+  var comp = proj.items.addComp({json.dumps(name)}, {width}, {height}, 1.0, {total_dur}, {fps});
+  var folder = proj.items.addFolder({json.dumps(name + " crops")});
   var items = {json.dumps(items)}
+  var missing = 0;
   for (var i=0;i<items.length;i++) {{
     var rec = items[i];
     var f = new File(rec.path);
-    if (!f.exists) continue;
+    if (!f.exists) {{ missing++; continue; }}
     var it = proj.importFile(new ImportOptions(f));
     it.parentFolder = folder;
     var L = comp.layers.add(it);
@@ -505,6 +732,10 @@ def write_jsx(
     {"var S=L.property('Scale'); var sNow=S.value[0]; S.setValueAtTime(L.startTime,[sNow,sNow]); S.setValueAtTime(L.outPoint,[sNow*"+str(1.0+punch)+", sNow*"+str(1.0+punch)+"]); S.setInterpolationTypeAtKey(1, KeyframeInterpolationType.BEZIER); S.setInterpolationTypeAtKey(2, KeyframeInterpolationType.BEZIER);" if punch and punch>0 else ""}
   }}
   comp.openInViewer();
+  if (missing) alert('WikiSplice: ' + missing + ' of ' + items.length + ' screenshots were missing (moved or deleted?) and were skipped.');
+  }} catch (e) {{
+    alert('WikiSplice could not build the composition:\\n' + e.toString() + (e.line ? ' (line ' + e.line + ')' : ''));
+  }}
   app.endUndoGroup();
 }})();
 """
@@ -512,31 +743,77 @@ def write_jsx(
         f.write(jsx)
 
 
-def maybe_run_after_effects(out_jsx: str, ae_version: str = "Adobe After Effects 2025") -> None:
+def maybe_run_after_effects(out_jsx: str, ae_version: str = "Adobe After Effects 2026") -> Tuple[bool, str]:
+    """
+    Run the JSX in After Effects. Launches AE first if needed and waits until it
+    can accept scripts. Returns (ok, human-readable message).
+    """
     jsx_abs = _abs(out_jsx)
-    if sys.platform == "darwin":
-        import shutil, subprocess
-        osa = shutil.which("osascript")
-        if osa:
-            script = f"""tell application "{ae_version}"
-  activate
-  DoScriptFile (POSIX file "{jsx_abs}")
-end tell"""
-            subprocess.run([osa, "-e", script], check=False)
-            print(f"Sent JSX to {ae_version}: {jsx_abs}")
-        else:
-            print("osascript not found; open JSX manually:", jsx_abs)
-    elif os.name == "nt":
+    if os.name == "nt":
         os.startfile(jsx_abs)  # type: ignore
-    else:
-        print("Open this JSX in After Effects:", jsx_abs)
+        return True, f"Opened {jsx_abs}"
+    if sys.platform != "darwin":
+        msg = f"Open this JSX in After Effects: {jsx_abs}"
+        print(msg)
+        return False, msg
+
+    import subprocess
+    import tempfile
+    import time
+
+    def osa(script: str, timeout: float = 600) -> Tuple[int, str]:
+        try:
+            r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=timeout)
+            return r.returncode, (r.stderr or r.stdout).strip()
+        except subprocess.TimeoutExpired:
+            return 1, "timed out"
+
+    def asq(text: str) -> str:  # AppleScript string literal
+        return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    app_q = asq(ae_version)
+    code, out = osa(f'application {app_q} is running', timeout=20)
+    if code != 0:
+        msg = f"Couldn't find \"{ae_version}\". Pick your After Effects version and try again. ({out})"
+        print("[error]", msg)
+        return False, msg
+
+    if out != "true":
+        print(f"[ae] Launching {ae_version} (this can take a minute)...")
+        subprocess.run(["open", "-a", ae_version], check=False)
+        # AE accepts AppleScript before it's ready for scripts; wait for a probe to actually run.
+        marker = os.path.join(tempfile.gettempdir(), f"wikisplice_ae_ready_{os.getpid()}")
+        if os.path.exists(marker):
+            os.remove(marker)
+        probe = (f"try {{ var f = new File({json.dumps(marker)}); f.open('w'); f.write('1'); f.close(); }} catch (e) {{}}")
+        deadline = time.time() + 240
+        while time.time() < deadline and not os.path.exists(marker):
+            time.sleep(3)
+            osa(f'tell application {app_q} to DoScript {asq(probe)}', timeout=30)
+        if os.path.exists(marker):
+            os.remove(marker)
+        else:
+            time.sleep(10)  # scripts may not be allowed to write files; give it extra time and send anyway
+
+    code, out = osa(f'tell application {app_q}\n  activate\n  DoScriptFile (POSIX file {asq(jsx_abs)})\nend tell')
+    if code != 0:
+        if "-1743" in out or "Not authorized" in out:
+            msg = ("macOS blocked WikiSplice from controlling After Effects. Open System Settings → Privacy & Security → "
+                   "Automation, and allow Terminal (or whichever app launched WikiSplice) to control After Effects. Then try again.")
+        else:
+            msg = f"After Effects reported an error: {out}"
+        print("[error]", msg)
+        return False, msg
+    msg = f"Sent to {ae_version}. Your composition should be open there now."
+    print("[ok]", msg, jsx_abs)
+    return True, msg
 
 
 # ------------------------------
 # CLI
 # ------------------------------
 def main():
-    ap = argparse.ArgumentParser(description="Wikipedia → AE collage with precise centering (text search)")
+    ap = argparse.ArgumentParser(description="Wikipedia / sports blogs → After Effects collage with precise centering. Prefer a point-and-click UI? Run: python app.py")
     ap.add_argument("--term", required=True)
     ap.add_argument("--limit", type=int, default=20, help="Wikipedia search batch size per API call")
     ap.add_argument("--out", default="./wiki_collage", help="Output directory (screens + JSX)")
@@ -562,29 +839,75 @@ def main():
 
     ap.add_argument("--settle-ms", type=int, default=60)
 
-    ap.add_argument("--ae-punch", type=float, default=0.0, help="End scale multiplier-1 (e.g., 0.08 = +8%)")
-    ap.add_argument("--scale", type=float, default=100.0, help="Base Scale % for each layer (used with scale-to-fill)")
+    ap.add_argument("--ae-punch", type=float, default=0.0, help="End scale multiplier-1 (e.g., 0.08 = +8%%)")
+    ap.add_argument("--scale", type=float, default=100.0, help="Base Scale %% for each layer (used with scale-to-fill)")
     ap.add_argument("--run-ae", action="store_true")
-    ap.add_argument("--ae-version", default="Adobe After Effects 2025")
+    ap.add_argument("--ae-version", default="Adobe After Effects 2026")
 
     ap.add_argument("--search-in", choices=["text", "title", "both"], default="text", help="Where to search in MediaWiki index")
     ap.add_argument("--no-math-map", action="store_true", help="Disable glyph→LaTeX expansion for text search")
+
+    ap.add_argument("--source", choices=["wikipedia", "sports", "both"], default="wikipedia",
+                    help="Where to find pages: Wikipedia, sports blogs/news sites, or both mixed together")
+    ap.add_argument("--sports-sites", default=",".join(DEFAULT_SPORTS_SITES),
+                    help="Comma-separated sports sites to search when --source is sports/both")
+    ap.add_argument("--max-articles", type=int, default=40,
+                    help="Max sports articles to visit when --source is sports/both")
+
+    ap.add_argument("--fresh", action="store_true",
+                    help="Move screenshots from earlier runs into <out>/previous/ before starting")
 
     args = ap.parse_args()
 
     outdir = os.path.abspath(os.path.expanduser(args.out))
     screens_dir = os.path.join(outdir, "screens")
     os.makedirs(screens_dir, exist_ok=True)
+    if args.fresh:
+        # Move (never delete) screenshots from earlier runs so they don't get mixed in
+        import glob, shutil, time
+        olds = glob.glob(os.path.join(screens_dir, "*.png"))
+        if olds:
+            keep = os.path.join(outdir, "previous", time.strftime("%Y-%m-%d_%H-%M-%S"))
+            os.makedirs(keep, exist_ok=True)
+            for f in olds:
+                shutil.move(f, keep)
+            for f in glob.glob(os.path.join(outdir, "*.jsx")):
+                shutil.move(f, keep)
+            print(f"[info] Moved {len(olds)} screenshots from the last run to {keep}")
+
+    def page_batches():
+        wiki_kw = dict(limit=args.limit, search_in=args.search_in, include_math_map=(not args.no_math_map))
+        sports: List[Tuple[str, str]] = []
+        if args.source in ("sports", "both"):
+            print(f"[search] Searching sports sites for '{args.term}'...")
+            sports = sports_search(args.term, args.sports_sites.split(","), max_results=args.max_articles)
+            if args.source == "sports":
+                if sports:
+                    yield sports
+                return
+        offset = 0
+        while True:
+            pages = wiki_search_batch(args.term, offset=offset, **wiki_kw)
+            if offset == 0 and sports:
+                # Mix blog articles in with the first Wikipedia batch
+                mixed: List[Tuple[str, str]] = []
+                for k in range(max(len(pages), len(sports))):
+                    mixed += pages[k:k + 1] + sports[k:k + 1]
+                pages_to_capture = mixed
+            else:
+                pages_to_capture = pages
+            if not pages_to_capture:
+                return
+            yield pages_to_capture
+            offset += len(pages)
+            if len(pages) < args.limit:
+                return
 
     images: List[dict] = []
-    offset = 0
-    while True:
+    page_index = 1
+    for pages in page_batches():
         remaining = None if args.max_total_matches is None else max(0, args.max_total_matches - len(images))
         if remaining is not None and remaining == 0:
-            break
-
-        pages = wiki_search_batch(args.term, limit=args.limit, offset=offset, search_in=args.search_in, include_math_map=(not args.no_math_map))
-        if not pages:
             break
 
         imgs = capture_wiki_screenshots(
@@ -604,17 +927,18 @@ def main():
             highlight_all=args.highlight_all,
             settle_ms=args.settle_ms,
             max_total_matches=remaining,
+            start_index=page_index,
         )
         images.extend(imgs)
-        offset += len(pages)
-        if len(pages) < args.limit:
-            break
+        page_index += len(pages)
 
     if not images:
-        sys.exit("No images available")
+        hint = " Try turning off case-sensitive/whole-word matching, or a different source." if args.source != "wikipedia" else " Try --ignore-case, --search-in both, or --source sports."
+        sys.exit(f"[error] No screenshots captured for '{args.term}'.{hint}")
 
     out_jsx = os.path.join(outdir, f"build_wikisplice_{_safe_slug(args.term)}.jsx")
-    write_jsx(images, out_jsx, fps=args.fps, shot_dur=args.speed, width=args.width, height=args.height, scale_pct=args.scale, dpr=args.dpr, punch=args.ae_punch)
+    write_jsx(images, out_jsx, fps=args.fps, shot_dur=args.speed, width=args.width, height=args.height, scale_pct=args.scale, dpr=args.dpr, punch=args.ae_punch,
+              name=f"WikiSplice - {args.term}")
     print(f"[ok] JSX written: {out_jsx}")
 
     if args.run_ae:

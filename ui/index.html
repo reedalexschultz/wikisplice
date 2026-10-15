@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WikiSplice</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --card: #ffffff; --ink: #1b1b1a; --muted: #6b6a66; --line: #e3e1db;
+    --accent: #2f5bea; --accent-ink: #ffffff; --accent-soft: #e8eefe;
+    --good: #1f8a4c; --bad: #c2362f; --warn: #a86a00; --log: #f1efea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141413; --card: #1d1d1b; --ink: #ecebe7; --muted: #9b9a95; --line: #2e2e2b;
+      --accent: #6d8dff; --accent-ink: #0d0d0c; --accent-soft: #232b45;
+      --good: #4cc27f; --bad: #ff6b62; --warn: #e3a43a; --log: #171716;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 880px; margin: 0 auto; padding: 32px 16px 80px; }
+  header h1 { margin: 0; font-size: 28px; letter-spacing: -0.02em; }
+  header p { margin: 4px 0 24px; color: var(--muted); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 20px; margin-bottom: 16px; }
+  .card h2 { margin: 0 0 12px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+  label { display: block; font-weight: 600; margin-bottom: 6px; }
+  .hint { color: var(--muted); font-size: 13px; font-weight: 400; margin-top: 4px; }
+  input[type=text], input[type=number], select, textarea {
+    width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+    background: var(--bg); color: var(--ink); font: inherit; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  #term { font-size: 20px; padding: 14px 16px; }
+  .seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .seg button { text-align: left; padding: 12px; border-radius: 10px; border: 1px solid var(--line);
+                background: var(--bg); color: var(--ink); font: inherit; cursor: pointer; }
+  .seg button b { display: block; }
+  .seg button span { color: var(--muted); font-size: 13px; }
+  .seg button.on { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+  .row { display: flex; align-items: center; gap: 10px; }
+  .check { display: flex; gap: 10px; align-items: flex-start; font-weight: 400; cursor: pointer; margin: 0; }
+  .check input { margin-top: 4px; width: 16px; height: 16px; accent-color: var(--accent); }
+  .check b { font-weight: 600; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .val { font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 700; }
+  details summary { cursor: pointer; font-weight: 600; }
+  details[open] summary { margin-bottom: 16px; }
+  .btn { padding: 12px 20px; border-radius: 10px; border: 1px solid var(--line); background: var(--card);
+         color: var(--ink); font: inherit; font-weight: 600; cursor: pointer; }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-size: 17px; padding: 14px 28px; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .bar { height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; margin: 12px 0; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  .bar.indeterminate > div { width: 30%; animation: slide 1.2s infinite ease-in-out; }
+  @keyframes slide { from { margin-left: -30%; } to { margin-left: 100%; } }
+  #status { font-weight: 600; }
+  #status.good { color: var(--good); } #status.bad { color: var(--bad); }
+  #now { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin-top: 12px; }
+  .gallery a { display: block; aspect-ratio: 16/9; border-radius: 8px; overflow: hidden; border: 1px solid var(--line);
+               background: repeating-conic-gradient(var(--line) 0 25%, transparent 0 50%) 0 0/16px 16px; }
+  .gallery img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  pre#log { background: var(--log); border: 1px solid var(--line); border-radius: 10px; padding: 12px; max-height: 260px;
+            overflow: auto; font: 12px/1.5 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-all; margin: 8px 0 0; }
+  .err { color: var(--bad); font-weight: 600; margin-top: 10px; }
+  .hidden { display: none !important; }
+  @media (max-width: 600px) { .seg { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>WikiSplice</h1>
+    <p>Type a word or name. WikiSplice finds it across the web, screenshots every spot it appears, and builds an After Effects montage.</p>
+  </header>
+
+  <form id="form" autocomplete="off">
+    <section class="card">
+      <label for="term">What do you want to search for?</label>
+      <input type="text" id="term" name="term" placeholder="e.g. Shohei Ohtani, Renaissance, ∫" required>
+      <div class="hint">Names work best spelled exactly as they'd appear in an article.</div>
+
+      <div style="margin-top:18px">
+        <label>Where should it look?</label>
+        <div class="seg" id="source">
+          <button type="button" data-v="wikipedia"><b>Wikipedia</b><span>Best for topics, places, history, math</span></button>
+          <button type="button" data-v="sports"><b>Sports blogs</b><span>ESPN, Bleacher Report, SB Nation & more. Great for players</span></button>
+          <button type="button" data-v="both"><b>Both</b><span>Mix Wikipedia and sports articles together</span></button>
+        </div>
+      </div>
+
+      <div id="sportsBox" class="hidden" style="margin-top:16px">
+        <label for="sports_sites">Sports sites to search</label>
+        <textarea id="sports_sites" name="sports_sites" rows="3"></textarea>
+        <div class="hint">Comma-separated. Add or remove any site (e.g. <code>mlb.com</code>, <code>nba.com</code>, a team blog).</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Your video</h2>
+      <div class="grid">
+        <div>
+          <label for="format">Shape</label>
+          <select id="format">
+            <option value="1920x1080">Landscape 16:9 (YouTube)</option>
+            <option value="1920x1920">Square 1:1 (Instagram)</option>
+            <option value="1080x1920">Vertical 9:16 (TikTok, Reels)</option>
+            <option value="custom">Custom…</option>
+          </select>
+          <div id="customSize" class="row hidden" style="margin-top:8px">
+            <input type="number" name="width" id="width" min="100" value="1920"> ×
+            <input type="number" name="height" id="height" min="100" value="1080">
+          </div>
+        </div>
+        <div>
+          <label for="speed">How long each shot stays on screen</label>
+          <select id="speed" name="speed">
+            <option value="0.05">Very fast (0.05 s)</option>
+            <option value="0.08">Fast (0.08 s)</option>
+            <option value="0.12" selected>Normal (0.12 s)</option>
+            <option value="0.25">Slow (0.25 s)</option>
+            <option value="0.5">Very slow (0.5 s)</option>
+          </select>
+        </div>
+        <div>
+          <label for="max_total">Number of screenshots: <span class="val" id="max_total_v"></span></label>
+          <input type="range" id="max_total" name="max_total" min="5" max="200" step="5" value="30">
+          <div class="hint">More shots take longer to collect.</div>
+        </div>
+        <div>
+          <label for="framing_zoom">Zoom: <span class="val" id="framing_zoom_v"></span></label>
+          <input type="range" id="framing_zoom" name="framing_zoom" min="0.5" max="5" step="0.25" value="1">
+          <div class="hint">Left = word fills the screen. Right = more surrounding text.</div>
+        </div>
+      </div>
+
+      <div class="grid" style="margin-top:18px">
+        <label class="check"><input type="checkbox" name="match_case" checked>
+          <span><b>Match capital letters exactly</b><div class="hint">Turn off to also find “paul skenes” or “PAUL SKENES”.</div></span></label>
+        <label class="check"><input type="checkbox" name="whole_word" checked>
+          <span><b>Whole words only</b><div class="hint">Turn off so “Jordan” also matches “Jordans”.</div></span></label>
+        <label class="check"><input type="checkbox" name="run_ae" id="run_ae">
+          <span><b>Open in After Effects when done</b><div class="hint" id="aeHint">Builds the composition automatically.</div></span></label>
+      </div>
+      <div id="aeBox" class="hidden" style="margin-top:12px; max-width:340px">
+        <label for="ae_version">After Effects version</label>
+        <select id="ae_version" name="ae_version"></select>
+      </div>
+    </section>
+
+    <section class="card">
+      <details>
+        <summary>Advanced settings</summary>
+        <div class="grid">
+          <div><label for="max_per_page">Max shots per page</label>
+            <input type="number" id="max_per_page" name="max_per_page" min="1" value="3">
+            <div class="hint">How many times to capture the word on a single page.</div></div>
+          <div><label for="max_articles">Max sports articles to visit</label>
+            <input type="number" id="max_articles" name="max_articles" min="1" value="40"></div>
+          <div><label for="target_word_px">Word size (pixels)</label>
+            <input type="number" id="target_word_px" name="target_word_px" min="50" value="600">
+            <div class="hint">How wide the word appears in the final video.</div></div>
+          <div><label for="dpr">Sharpness</label>
+            <select id="dpr" name="dpr">
+              <option value="2">Standard (2×)</option>
+              <option value="3" selected>High (3×)</option>
+              <option value="5">Ultra (5×, slower)</option>
+            </select></div>
+          <div><label for="fps">Frame rate</label>
+            <select id="fps" name="fps">
+              <option value="24">24 fps</option><option value="30">30 fps</option>
+              <option value="60" selected>60 fps</option>
+            </select></div>
+          <div><label for="ae_punch">Zoom-in during each shot</label>
+            <select id="ae_punch" name="ae_punch">
+              <option value="0" selected>None</option><option value="0.04">Subtle (+4%)</option>
+              <option value="0.08">Medium (+8%)</option><option value="0.15">Strong (+15%)</option>
+            </select></div>
+          <div><label for="scale">Layer scale %</label>
+            <input type="number" id="scale" name="scale" min="10" value="100"></div>
+          <div><label for="search_in">Wikipedia: search in</label>
+            <select id="search_in" name="search_in">
+              <option value="text" selected>Article text</option>
+              <option value="title">Article titles</option>
+              <option value="both">Both</option>
+            </select></div>
+          <div><label for="center_max_iter">Centering passes</label>
+            <input type="number" id="center_max_iter" name="center_max_iter" min="1" value="6"></div>
+          <div><label for="settle_ms">Page settle time (ms)</label>
+            <input type="number" id="settle_ms" name="settle_ms" min="0" value="60"></div>
+        </div>
+        <div class="grid" style="margin-top:16px">
+          <label class="check"><input type="checkbox" name="highlight_all">
+            <span><b>Highlight matches in yellow</b></span></label>
+          <label class="check"><input type="checkbox" name="pad_to_center">
+            <span><b>Perfect centering</b><div class="hint">Pads pages so words near the top are still centered.</div></span></label>
+          <label class="check"><input type="checkbox" name="no_math_map">
+            <span><b>Don't expand math symbols</b><div class="hint">By default ∫ also searches for \int, etc.</div></span></label>
+        </div>
+      </details>
+    </section>
+
+    <div class="actions">
+      <button class="btn primary" id="go" type="submit">Start</button>
+      <button class="btn hidden" id="stop" type="button">Stop</button>
+      <span class="err" id="formErr"></span>
+    </div>
+  </form>
+
+  <section class="card hidden" id="results" style="margin-top:16px">
+    <div class="row" style="justify-content:space-between">
+      <div id="status">Working…</div>
+      <div class="val" id="count"></div>
+    </div>
+    <div class="bar" id="bar"><div></div></div>
+    <div id="now"></div>
+    <div class="actions hidden" id="doneActions" style="margin-top:12px">
+      <button class="btn" type="button" id="openFolder">Show files</button>
+      <button class="btn" type="button" id="openAE">Open in After Effects</button>
+      <select id="ae_pick" class="hidden" style="width:auto" aria-label="After Effects version"></select>
+    </div>
+    <div id="aeMsg" class="hint" style="margin-top:8px"></div>
+    <div class="gallery" id="gallery"></div>
+    <details style="margin-top:16px"><summary>Details (log)</summary><pre id="log"></pre></details>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const form = $('#form');
+let source = 'wikipedia', logLen = 0, polling = null, aeVersions = [];
+const STORE = 'wikisplice-form-v1';
+
+// ---------- form helpers ----------
+function setSource(v) {
+  source = v;
+  document.querySelectorAll('#source button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
+  $('#sportsBox').classList.toggle('hidden', v === 'wikipedia');
+}
+document.querySelectorAll('#source button').forEach(b => b.onclick = () => { setSource(b.dataset.v); save(); });
+
+function syncSize() {
+  const v = $('#format').value;
+  $('#customSize').classList.toggle('hidden', v !== 'custom');
+  if (v !== 'custom') { const [w, h] = v.split('x'); $('#width').value = w; $('#height').value = h; }
+}
+$('#format').onchange = () => { syncSize(); save(); };
+
+function syncLabels() {
+  $('#max_total_v').textContent = $('#max_total').value;
+  $('#framing_zoom_v').textContent = (+$('#framing_zoom').value).toFixed(2) + '×';
+  $('#aeBox').classList.toggle('hidden', !$('#run_ae').checked || aeVersions.length < 2);
+}
+
+function values() {
+  const o = { source, format: $('#format').value };
+  for (const el of form.elements) {
+    if (!el.name) continue;
+    o[el.name] = el.type === 'checkbox' ? el.checked : el.value;
+  }
+  return o;
+}
+function save() { syncLabels(); try { localStorage.setItem(STORE, JSON.stringify(values())); } catch (e) {} }
+function load() {
+  let o; try { o = JSON.parse(localStorage.getItem(STORE) || 'null'); } catch (e) {}
+  if (!o) return;
+  for (const el of form.elements) {
+    if (!el.name || !(el.name in o) || el.name === 'ae_version') continue;
+    if (el.type === 'checkbox') el.checked = !!o[el.name]; else el.value = o[el.name];
+  }
+  if (o.format) $('#format').value = o.format;
+  if (o.source) setSource(o.source);
+  window._savedAE = o.ae_version;
+}
+form.addEventListener('input', save);
+
+// ---------- run ----------
+form.onsubmit = async e => {
+  e.preventDefault();
+  $('#formErr').textContent = '';
+  if (!$('#term').value.trim()) { $('#formErr').textContent = 'Type something to search for first.'; return; }
+  const r = await fetch('/api/run', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(values()) });
+  const j = await r.json();
+  if (!r.ok) { $('#formErr').textContent = j.error || 'Something went wrong.'; return; }
+  logLen = 0; $('#log').textContent = ''; $('#gallery').innerHTML = '';
+  $('#results').classList.remove('hidden');
+  $('#results').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  startPolling();
+};
+$('#stop').onclick = () => fetch('/api/stop', { method: 'POST', body: '{}' });
+
+async function openThing(what) {
+  const r = await fetch('/api/open', { method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ what, ae_version: $('#ae_pick').value }) });
+  const j = await r.json();
+  if (!r.ok && what !== 'ae') alert(j.error || j.message);
+  return j;
+}
+$('#openFolder').onclick = () => openThing('folder');
+$('#openAE').onclick = async () => {
+  const b = $('#openAE'), m = $('#aeMsg');
+  b.disabled = true; b.textContent = 'Opening…';
+  m.style.color = ''; m.textContent = 'Sending to After Effects. If it was closed, it will launch first (this can take a minute).';
+  try {
+    const j = await openThing('ae');
+    m.textContent = j.message || j.error || '';
+    m.style.color = j.ok ? 'var(--good)' : 'var(--bad)';
+  } catch (e) { m.textContent = 'Lost contact with WikiSplice. Is its window still open?'; m.style.color = 'var(--bad)'; }
+  b.disabled = false; b.textContent = 'Open in After Effects';
+};
+$('#ae_pick').onchange = () => { $('#ae_version').value = $('#ae_pick').value; save(); };
+$('#ae_version').addEventListener('change', () => { $('#ae_pick').value = $('#ae_version').value; });
+
+function friendly(line) {
+  let m;
+  if ((m = line.match(/^\[page\] (.+?) — /))) return 'Reading: ' + m[1];
+  if ((m = line.match(/^\[search\] (.+)/))) return m[1];
+  if ((m = line.match(/^\[skip\] No matches for .+ in (.+)/))) return 'Not on this page, moving on: ' + m[1];
+  return null;
+}
+
+function startPolling() {
+  clearInterval(polling);
+  $('#go').disabled = true; $('#stop').classList.remove('hidden');
+  $('#doneActions').classList.add('hidden'); $('#aeMsg').textContent = '';
+  $('#status').className = ''; $('#status').textContent = 'Working…';
+  polling = setInterval(poll, 700); poll();
+}
+
+async function poll() {
+  let s;
+  try { s = await (await fetch('/api/status?since=' + logLen)).json(); } catch (e) { return; }
+  if (s.log.length) {
+    logLen = s.log_len;
+    const pre = $('#log'); const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
+    pre.textContent += s.log.join('\n') + '\n';
+    if (atBottom) pre.scrollTop = pre.scrollHeight;
+    for (let i = s.log.length - 1; i >= 0; i--) { const f = friendly(s.log[i]); if (f) { $('#now').textContent = f; break; } }
+  }
+  // gallery
+  const have = new Set([...$('#gallery').children].map(a => a.dataset.p));
+  for (const p of s.images) {
+    if (have.has(p)) continue;
+    const a = document.createElement('a');
+    a.dataset.p = p; a.href = '/files/' + p.split('/').map(encodeURIComponent).join('/'); a.target = '_blank';
+    a.title = p.split('/').pop();
+    const img = document.createElement('img'); img.loading = 'lazy'; img.src = a.href;
+    a.appendChild(img); $('#gallery').appendChild(a);
+  }
+  const n = s.images.length, t = s.target || 1;
+  $('#count').textContent = n + ' / ' + t + ' shots';
+  $('#bar').classList.toggle('indeterminate', s.running && n === 0);
+  $('#bar > div').style.width = (s.running && n === 0) ? '' : Math.min(100, 100 * n / t) + '%';
+
+  if (!s.running && s.exit_code !== null) {
+    clearInterval(polling);
+    $('#go').disabled = false; $('#stop').classList.add('hidden');
+    $('#bar').classList.remove('indeterminate');
+    const st = $('#status');
+    if (s.stopped) { st.textContent = 'Stopped. ' + n + ' screenshots saved.'; st.className = ''; }
+    else if (s.exit_code === 0) {
+      st.textContent = 'Done! ' + n + ' screenshots ready.'; st.className = 'good';
+      $('#bar > div').style.width = '100%';
+      $('#now').textContent = 'Click “Open in After Effects” to build the video, or “Show files” to see the screenshots.';
+    } else {
+      st.className = 'bad';
+      const errLine = [...$('#log').textContent.trim().split('\n')].reverse().find(l => l.startsWith('[error]'));
+      st.textContent = errLine ? errLine.replace('[error] ', '') : 'Something went wrong. Open “Details” below to see why.';
+      $('#now').textContent = '';
+    }
+    if (n) $('#doneActions').classList.remove('hidden');
+    $('#openAE').classList.toggle('hidden', !s.jsx);
+  }
+}
+
+// ---------- init ----------
+(async () => {
+  const info = await (await fetch('/api/info')).json();
+  $('#sports_sites').value = info.sports_sites.join(', ');
+  aeVersions = info.ae_versions;
+  const sel = $('#ae_version');
+  (aeVersions.length ? aeVersions : ['Adobe After Effects 2026']).forEach(v => { sel.add(new Option(v, v)); $('#ae_pick').add(new Option(v, v)); });
+  $('#ae_pick').classList.toggle('hidden', aeVersions.length < 2);
+  if (!aeVersions.length) $('#aeHint').textContent = "After Effects wasn't found in Applications. You can still open the .jsx file by hand.";
+  load();
+  if (window._savedAE && aeVersions.includes(window._savedAE)) sel.value = window._savedAE;
+  $('#ae_pick').value = sel.value;
+  if (!document.querySelector('#source button.on')) setSource('wikipedia');
+  syncSize(); syncLabels();
+  // Re-attach if a job is already running (page refreshed)
+  const s = await (await fetch('/api/status')).json();
+  if (s.running || s.exit_code !== null) { $('#results').classList.remove('hidden'); startPolling(); }
+  $('#term').focus();
+})();
+</script>
+</body>
+</html>

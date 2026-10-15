@@ -1,41 +1,78 @@
 # wikisplice
 
-A powerful tool for creating dynamic video collages from Wikipedia search results. wikisplice searches Wikipedia for a given term, captures screenshots of matching text on relevant pages, and automatically generates an After Effects composition with precisely centered, animated sequences.
+Make fast-cut video montages of a word or name appearing across the web.
 
-## What It Does
+Type something like **"Shohei Ohtani"** or **"Renaissance"**. wikisplice finds pages that mention it (on **Wikipedia** or on **sports blogs** such as ESPN, Bleacher Report, and SB Nation), takes a screenshot centered on each mention, and builds an **Adobe After Effects** composition that flashes through them in sequence.
 
-wikisplice performs the following workflow:
+---
 
-1. **Search Wikipedia** - Uses the MediaWiki API to find pages containing your search term
-2. **Capture Screenshots** - Opens each page with Playwright, highlights matching text, and captures cropped screenshots centered on the matches
-3. **Generate After Effects Script** - Creates a JSX file that builds an animated composition in Adobe After Effects
-4. **Optional Auto-Launch** - Can automatically open and run the generated script in After Effects
+## The easy way (no terminal needed)
 
-The result is a smooth, timed sequence showing your search term across multiple Wikipedia contexts, perfect for educational content, visual research, or artistic projects.
+1. **Download** this folder to your computer.
+2. **Double-click `Start WikiSplice.command`** (Mac) or **`Start WikiSplice.bat`** (Windows).
+   - The first time, it sets itself up automatically. This takes a few minutes and needs an internet connection.
+   - On a Mac, if it says the file "can't be opened", right-click it, choose **Open**, then click **Open** again.
+3. A page opens in your web browser. Type what you're looking for, pick where to search, and press **Start**.
+4. Screenshots appear as they're captured. When it's done, click **Open in After Effects** to build the video.
 
-## Installation
+Leave the small black terminal window open while you use it. Close it when you're finished.
+
+> **Need Python?** If the launcher says Python isn't installed, get it from [python.org/downloads](https://www.python.org/downloads/) (on Windows, tick "Add Python to PATH" during install), then double-click the launcher again.
+
+### Where should it look?
+
+| Option | Best for |
+|---|---|
+| **Wikipedia** | Topics, places, historical figures, science and math terms |
+| **Sports blogs** | Athletes, coaches, and teams, especially players who don't appear in many Wikipedia articles |
+| **Both** | Mixing encyclopedic and sports coverage in one montage |
+
+You can edit the list of sports sites right in the app, for example to add `mlb.com`, `nba.com`, or your team's blog.
+
+### Where do my files go?
+
+Each search gets its own folder inside `wiki_collage/`, named after what you searched:
+
+```
+wiki_collage/
+└── Shohei_Ohtani/
+    ├── screens/                       ← all the screenshots (PNG)
+    └── build_wikisplice_Shohei_Ohtani.jsx   ← the After Effects script
+```
+
+Click **Show files** in the app to open the folder. To build the video by hand, open After Effects and choose **File → Scripts → Run Script File…**, then pick the `.jsx` file.
+
+---
+
+## Command line (for power users)
+
+Everything the app does is also available from the terminal.
 
 ```bash
-# Install Python dependencies
-pip install playwright requests
-
-# Install browser for Playwright
+pip install -r requirements.txt
 playwright install chromium
+
+# Open the point-and-click app
+python app.py
+
+# Or run directly
+python wikisplice.py --term "your search term"
+
+# Search sports blogs for a player
+python wikisplice.py --term "Paul Skenes" --source sports --max-total-matches 30
 ```
-
-## Basic Usage
-
-```bash
-python wikisplice.py --term "your search term" --run-ae
-```
-
-This will create a `wiki_collage` directory with screenshots and an After Effects JSX script, and will run the JSX in After Effects Automatically.
 
 ## Command Line Arguments
 
 ### Required Arguments
 
-- `--term` - The search term to find on Wikipedia pages
+- `--term` - The search term to find
+
+### Where to Search
+
+- `--source` (choices: `wikipedia`, `sports`, `both`, default: `wikipedia`) - Search Wikipedia, sports blogs/news sites, or mix both
+- `--sports-sites` (default: ESPN, Bleacher Report, SB Nation, SI, CBS Sports, Yahoo Sports, Fox Sports, NBC Sports, The Ringer, FanSided, Barstool, The Big Lead) - Comma-separated list of sites to search with `--source sports`/`both`
+- `--max-articles` (default: `40`) - Maximum number of sports articles to visit
 
 ### Output Settings
 
@@ -79,11 +116,28 @@ This will create a `wiki_collage` directory with screenshots and an After Effect
 - `--pad-to-center` - Add padding to pages to achieve perfect vertical centering
 - `--settle-ms` (default: `60`) - Milliseconds to wait for page layout to stabilize
 
-## Examples
+## Command-Line Examples
 
 ### Basic Example
 ```bash
 python wikisplice.py --term "Python programming"
+```
+
+### Sports Player Montage
+```bash
+python wikisplice.py --term "Caitlin Clark" \
+  --source sports \
+  --max-total-matches 40 --max-matches-per-page 3 \
+  --framing-zoom 2.0 --speed 0.08 --run-ae
+```
+
+Searches ESPN, Bleacher Report, SB Nation and other sports sites for articles mentioning the player, then screenshots each mention.
+
+### Only Specific Sites
+```bash
+python wikisplice.py --term "Victor Wembanyama" \
+  --source sports \
+  --sports-sites "nba.com,espn.com,poundingtherock.com"
 ```
 
 ### High-Quality Educational Content
@@ -173,7 +227,7 @@ wikisplice automatically recognizes mathematical symbols and expands searches to
 
 ## System Requirements
 
-- Python 3.7+
+- Python 3.9+
 - Chromium browser (installed via Playwright)
 - Adobe After Effects (for JSX execution)
 - macOS, Windows, or Linux
@@ -181,6 +235,7 @@ wikisplice automatically recognizes mathematical symbols and expands searches to
 ## Troubleshooting
 
 - **"playwright not installed"**: Run `pip install playwright && playwright install chromium`
-- **No matches found**: Try `--ignore-case` or `--search-in both`
+- **No matches found**: Try `--ignore-case` or `--search-in both`. For athletes and other people with thin Wikipedia coverage, try `--source sports`
+- **A sports site gives no results**: Some sites block automated browsers or sit behind paywalls; wikisplice skips those and keeps going. Add other sites with `--sports-sites`
 - **Screenshots too small**: Increase `--target-word-px` or `--framing-zoom`
 - **After Effects won't launch**: Check `--ae-version` matches your installation
