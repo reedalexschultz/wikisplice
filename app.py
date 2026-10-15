@@ -27,10 +27,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, "wikisplice.py")
 UI_FILE = os.path.join(HERE, "ui", "index.html")
-OUTPUT_ROOT = os.path.join(HERE, "wiki_collage")
 
 sys.path.insert(0, HERE)
-from wikisplice import DEFAULT_SPORTS_SITES, _safe_slug  # noqa: E402
+from wikisplice import DEFAULT_SPORTS_SITES, OUTPUT_ROOT, default_run_dir  # noqa: E402
 
 
 # ------------------------------
@@ -122,8 +121,8 @@ def build_argv(o: dict) -> tuple[list[str], str, int]:
     term = str(o.get("term", "")).strip()
     if not term:
         raise ValueError("Type something to search for first.")
-    outdir = os.path.join(OUTPUT_ROOT, _safe_slug(term))
-    argv = [sys.executable, "-u", SCRIPT, "--term", term, "--out", outdir, "--fresh"]
+    outdir = default_run_dir(term)  # new folder every run; nothing is cleared
+    argv = [sys.executable, "-u", SCRIPT, "--term", term, "--out", outdir]
 
     source = o.get("source", "wikipedia")
     if source not in ("wikipedia", "sports", "both"):

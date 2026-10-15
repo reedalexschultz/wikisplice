@@ -1,5 +1,8 @@
 .venv/
 
+# Screenshots and After Effects scripts (never committed)
+output/
 wiki_collage/
+
 __pycache__/
 .DS_Store

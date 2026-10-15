@@ -812,11 +812,26 @@ def maybe_run_after_effects(out_jsx: str, ae_version: str = "Adobe After Effects
 # ------------------------------
 # CLI
 # ------------------------------
+OUTPUT_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+
+
+def default_run_dir(term: str) -> str:
+    """output/<term>/<date_time>/ — every run gets its own folder, so nothing is ever overwritten."""
+    import time
+    base = os.path.join(OUTPUT_ROOT, _safe_slug(term), time.strftime("%Y-%m-%d_%H-%M-%S"))
+    path, n = base, 2
+    while os.path.exists(path):  # two runs in the same second
+        path = f"{base}_{n}"
+        n += 1
+    return path
+
+
 def main():
     ap = argparse.ArgumentParser(description="Wikipedia / sports blogs → After Effects collage with precise centering. Prefer a point-and-click UI? Run: python app.py")
     ap.add_argument("--term", required=True)
     ap.add_argument("--limit", type=int, default=20, help="Wikipedia search batch size per API call")
-    ap.add_argument("--out", default="./wiki_collage", help="Output directory (screens + JSX)")
+    ap.add_argument("--out", default=None,
+                    help="Output directory (screens + JSX). Default: output/<term>/<date_time>/, a new folder every run")
     ap.add_argument("--speed", type=float, default=0.12, help="Seconds per still")
     ap.add_argument("--fps", type=float, default=60.0)
     ap.add_argument("--width", type=int, default=1920)
@@ -854,26 +869,12 @@ def main():
     ap.add_argument("--max-articles", type=int, default=40,
                     help="Max sports articles to visit when --source is sports/both")
 
-    ap.add_argument("--fresh", action="store_true",
-                    help="Move screenshots from earlier runs into <out>/previous/ before starting")
-
     args = ap.parse_args()
 
-    outdir = os.path.abspath(os.path.expanduser(args.out))
+    outdir = os.path.abspath(os.path.expanduser(args.out or default_run_dir(args.term)))
     screens_dir = os.path.join(outdir, "screens")
     os.makedirs(screens_dir, exist_ok=True)
-    if args.fresh:
-        # Move (never delete) screenshots from earlier runs so they don't get mixed in
-        import glob, shutil, time
-        olds = glob.glob(os.path.join(screens_dir, "*.png"))
-        if olds:
-            keep = os.path.join(outdir, "previous", time.strftime("%Y-%m-%d_%H-%M-%S"))
-            os.makedirs(keep, exist_ok=True)
-            for f in olds:
-                shutil.move(f, keep)
-            for f in glob.glob(os.path.join(outdir, "*.jsx")):
-                shutil.move(f, keep)
-            print(f"[info] Moved {len(olds)} screenshots from the last run to {keep}")
+    print(f"[info] Saving to {outdir}")
 
     def page_batches():
         wiki_kw = dict(limit=args.limit, search_in=args.search_in, include_math_map=(not args.no_math_map))

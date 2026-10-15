@@ -31,14 +31,18 @@ You can edit the list of sports sites right in the app, for example to add `mlb.
 
 ### Where do my files go?
 
-Each search gets its own folder inside `wiki_collage/`, named after what you searched:
+Everything is saved in the `output/` folder. Each search gets a folder named after what you searched, and **every run gets its own dated folder inside it**, so earlier screenshots are never cleared or overwritten:
 
 ```
-wiki_collage/
+output/
 └── Shohei_Ohtani/
-    ├── screens/                       ← all the screenshots (PNG)
-    └── build_wikisplice_Shohei_Ohtani.jsx   ← the After Effects script
+    ├── 2026-10-15_10-42-03/
+    │   ├── screens/                              ← all the screenshots (PNG)
+    │   └── build_wikisplice_Shohei_Ohtani.jsx    ← the After Effects script
+    └── 2026-10-16_09-05-51/                      ← a later run
 ```
+
+Old runs stay until you delete them yourself. After Effects links to these PNGs rather than copying them, so keep a run's folder as long as you use its After Effects project. The `output/` folder is listed in `.gitignore`, so screenshots are never committed to git.
 
 Click **Show files** in the app to open the folder. To build the video by hand, open After Effects and choose **File → Scripts → Run Script File…**, then pick the `.jsx` file.
 
@@ -76,7 +80,7 @@ python wikisplice.py --term "Paul Skenes" --source sports --max-total-matches 30
 
 ### Output Settings
 
-- `--out` (default: `./wiki_collage`) - Output directory for screenshots and JSX file
+- `--out` (default: `output/<term>/<date_time>/`) - Output directory for screenshots and JSX file. By default every run gets a new folder, so nothing is overwritten
 - `--run-ae` - Automatically launch After Effects and run the generated script
 - `--ae-version` (default: `"Adobe After Effects 2025"`) - Name of After Effects application for auto-launch
 
@@ -192,10 +196,10 @@ python wikisplice.py --term "renaissance" \
 
 ## Output Structure
 
-The tool creates the following structure in your output directory:
+Each run creates this structure in its output directory (by default `output/<term>/<date_time>/`):
 
 ```
-wiki_collage/
+output/<term>/<date_time>/
 ├── screens/
 │   ├── 001_01_Page_Title_Name.png
 │   ├── 001_02_Page_Title_Name.png
