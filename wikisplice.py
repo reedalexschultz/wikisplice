@@ -763,32 +763,57 @@ def write_jsx(
     var shiftY = (-dy_css * dpr) * (s/100.0);
     layer.property('Position').setValue([compW/2 + shiftX, compH/2 + shiftY]);
   }}
-  app.beginUndoGroup('Wiki Collage Centered');
+  // Every change happens inside one undo group that is ALWAYS closed (finally), even if
+  // something fails halfway. An unclosed group leaves After Effects' undo history out of
+  // step ("undo group mismatch"), and a later Undo can then wreck unrelated compositions.
+  // Pop-ups wait until the group is closed.
+  var comp = null, placed = 0, missing = 0, failed = 0, fatal = null;
+  var items = {json.dumps(items)};
+  app.beginUndoGroup({json.dumps(name)});
   try {{
-  var proj = getOrCreateProject();
-  var comp = proj.items.addComp({json.dumps(name)}, {width}, {height}, 1.0, {total_dur}, {fps});
-  var folder = proj.items.addFolder({json.dumps(name + " crops")});
-  var items = {json.dumps(items)}
-  var missing = 0;
-  for (var i=0;i<items.length;i++) {{
-    var rec = items[i];
-    var f = new File(rec.path);
-    if (!f.exists) {{ missing++; continue; }}
-    var it = proj.importFile(new ImportOptions(f));
-    it.parentFolder = folder;
-    var L = comp.layers.add(it);
-    L.startTime = i*{shot_dur};
-    // Each shot is on screen only until the next one starts (the last one holds to the end)
-    L.outPoint  = (i == items.length - 1) ? comp.duration : Math.min(comp.duration, L.startTime + {shot_dur});
-    scaleToFillAndCenter(L, {width}, {height}, {scale_pct}, rec.dx, rec.dy, {dpr});
-    {"var S=L.property('Scale'); var sNow=S.value[0]; S.setValueAtTime(L.startTime,[sNow,sNow]); S.setValueAtTime(L.outPoint,[sNow*"+str(1.0+punch)+", sNow*"+str(1.0+punch)+"]); S.setInterpolationTypeAtKey(1, KeyframeInterpolationType.BEZIER); S.setInterpolationTypeAtKey(2, KeyframeInterpolationType.BEZIER);" if punch and punch>0 else ""}
-  }}
-  comp.openInViewer();
-  if (missing) alert('WikiSplice: ' + missing + ' of ' + items.length + ' screenshots were missing (moved or deleted?) and were skipped.');
+    var proj = getOrCreateProject();
+    comp = proj.items.addComp({json.dumps(name)}, {width}, {height}, 1.0, {total_dur}, {fps});
+    var folder = proj.items.addFolder({json.dumps(name + " crops")});
+    var last = null;
+    for (var i = 0; i < items.length; i++) {{
+      var rec = items[i];
+      var f = new File(rec.path);
+      if (!f.exists) {{ missing++; continue; }}
+      try {{
+        var it = proj.importFile(new ImportOptions(f));
+        it.parentFolder = folder;
+        var L = comp.layers.add(it);
+        L.startTime = placed * {shot_dur};  // no gaps if some screenshots were skipped
+        L.outPoint = Math.min(comp.duration, L.startTime + {shot_dur});  // on screen until the next shot
+        scaleToFillAndCenter(L, {width}, {height}, {scale_pct}, rec.dx, rec.dy, {dpr});
+        {"var S=L.property('Scale'); var sNow=S.value[0]; S.setValueAtTime(L.startTime,[sNow,sNow]); S.setValueAtTime(L.outPoint,[sNow*"+str(1.0+punch)+", sNow*"+str(1.0+punch)+"]); S.setInterpolationTypeAtKey(1, KeyframeInterpolationType.BEZIER); S.setInterpolationTypeAtKey(2, KeyframeInterpolationType.BEZIER);" if punch and punch>0 else ""}
+        last = L;
+        placed++;
+      }} catch (eItem) {{
+        failed++;  // skip this one screenshot, keep building the rest
+      }}
+    }}
+    if (placed > 0) {{
+      comp.duration = placed * {shot_dur};
+      last.outPoint = comp.duration;  // the last shot holds to the end
+    }}
   }} catch (e) {{
-    alert('WikiSplice could not build the composition:\\n' + e.toString() + (e.line ? ' (line ' + e.line + ')' : ''));
+    fatal = e;
+  }} finally {{
+    app.endUndoGroup();
   }}
-  app.endUndoGroup();
+
+  if (comp && placed > 0) comp.openInViewer();
+  // Messages never throw: if alert isn't available, skip the message rather than error out
+  function notify(msg) {{ try {{ if (typeof alert == 'function') alert(msg); else $.writeln(msg); }} catch (eNotify) {{}} }}
+  if (fatal) {{
+    notify('WikiSplice could not finish the composition:\\n' + fatal.toString() + (fatal.line ? ' (line ' + fatal.line + ')' : '')
+          + '\\n\\nYou can remove what it added with a single Edit > Undo.');
+  }} else if (missing || failed) {{
+    notify('WikiSplice: placed ' + placed + ' of ' + items.length + ' screenshots.'
+          + (missing ? '\\n' + missing + ' were missing (moved or deleted?).' : '')
+          + (failed ? '\\n' + failed + ' could not be imported.' : ''));
+  }}
 }})();
 """
     with open(out_jsx, "w", encoding="utf-8") as f:
