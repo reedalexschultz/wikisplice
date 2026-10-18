@@ -46,6 +46,7 @@ class Job:
         self.exit_code: int | None = None
         self.target = 0
         self.stopped = False
+        self.warning = ""
 
     @property
     def running(self) -> bool:
@@ -59,6 +60,7 @@ class Job:
             self.exit_code = None
             self.target = target
             self.stopped = False
+            self.warning = ""
             self.started = time.time()
             self.proc = subprocess.Popen(
                 argv, cwd=HERE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -75,6 +77,8 @@ class Job:
                 m = re.match(r"\[ok\] JSX written: (.+)$", line)
                 if m:
                     self.jsx = m.group(1).strip()
+                if line.startswith("[warn] Only found"):
+                    self.warning = line[len("[warn] "):]
         code = self.proc.wait()
         with self.lock:
             self.exit_code = code
@@ -132,6 +136,10 @@ def build_argv(o: dict) -> tuple[list[str], str, int]:
         sites = ",".join(s.strip() for s in re.split(r"[,\n]", str(o.get("sports_sites", ""))) if s.strip())
         if sites:
             argv += ["--sports-sites", sites]
+
+    exclude = ",".join(w.strip() for w in re.split(r"[,\n]", str(o.get("exclude", ""))) if w.strip())
+    if exclude:
+        argv += ["--exclude", exclude]
 
     def num(key: str, flag: str, cast=float) -> None:
         v = o.get(key)
@@ -227,7 +235,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({
                     "running": JOB.running, "exit_code": JOB.exit_code, "stopped": JOB.stopped,
                     "log": JOB.log[since:], "log_len": len(JOB.log), "jsx": JOB.jsx,
-                    "outdir": JOB.outdir, "target": JOB.target, "images": JOB.images(),
+                    "outdir": JOB.outdir, "target": JOB.target, "images": JOB.images(), "warning": JOB.warning,
                 })
         elif path.startswith("/files/"):
             rel = urllib.parse.unquote(path[len("/files/"):])

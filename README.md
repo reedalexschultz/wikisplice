@@ -29,6 +29,19 @@ Leave the small black terminal window open while you use it. Close it when you'r
 
 You can edit the list of sports sites right in the app, for example to add `mlb.com`, `nba.com`, or your team's blog.
 
+Sports searches go wider in rounds until there are enough screenshots. First come articles with the name in the headline, then news stories that only mention it somewhere in the text, like a game recap where the player scored a touchdown.
+
+### Leaving things out
+
+Type words into **Leave out anything about** to keep unrelated coverage out. For example, search **Duke** and leave out **basketball** to stick to football. wikisplice then skips:
+- articles with the word in their title or web address,
+- pages that are mainly about it (it comes up at least as often as your search term), and
+- any match in a paragraph that mentions it.
+
+### How many screenshots you get
+
+You get exactly the number you ask for, unless it runs out of articles. Pages that don't actually contain the term, matches hidden on the page, and repeat frames are skipped, and it keeps searching to make up for them. If there are no more new articles, it goes back to pages that had more matches than the per-page limit. If it still comes up short, the app tells you how many it found.
+
 ### Where do my files go?
 
 Everything is saved in the `output/` folder. Each search gets a folder named after what you searched, and **every run gets its own dated folder inside it**, so earlier screenshots are never cleared or overwritten:
@@ -76,7 +89,8 @@ python wikisplice.py --term "Paul Skenes" --source sports --max-total-matches 30
 
 - `--source` (choices: `wikipedia`, `sports`, `both`, default: `wikipedia`) - Search Wikipedia, sports blogs/news sites, or mix both
 - `--sports-sites` (default: ESPN, Bleacher Report, SB Nation, SI, CBS Sports, Yahoo Sports, Fox Sports, NBC Sports, The Ringer, FanSided, Barstool, The Big Lead) - Comma-separated list of sites to search with `--source sports`/`both`
-- `--max-articles` (default: `40`) - Maximum number of sports articles to visit
+- `--max-articles` (default: `200`) - Safety limit on sports articles to visit; it stops sooner once it has enough screenshots
+- `--exclude` - Comma-separated words to leave out, e.g. `"basketball,recruiting"`. Skips articles about them and matches in paragraphs that mention them
 
 ### Output Settings
 
@@ -143,6 +157,13 @@ python wikisplice.py --term "Victor Wembanyama" \
   --source sports \
   --sports-sites "nba.com,espn.com,poundingtherock.com"
 ```
+
+### Leaving Out a Topic
+```bash
+python wikisplice.py --term "Duke" --source sports --exclude "basketball"
+```
+
+Keeps a search for "Duke" to football by skipping basketball coverage.
 
 ### High-Quality Educational Content
 ```bash

@@ -102,12 +102,15 @@ def build_text_query(term: str, search_in: str = "text", include_math_map: bool 
     return s
 
 
-def wiki_search_batch(term: str, limit: int = 20, offset: int = 0, *, search_in: str = "text", include_math_map: bool = True) -> List[Tuple[str, str]]:
+def wiki_search_batch(term: str, limit: int = 20, offset: int = 0, *, search_in: str = "text", include_math_map: bool = True,
+                      exclude: Optional[List[str]] = None) -> List[Tuple[str, str]]:
     """Return a batch of up to `limit` results using TEXT-first search."""
     import requests
     session = requests.Session()
     ua = "WikiSplice/1.6 (local script)"
     srsearch = build_text_query(term, search_in=search_in, include_math_map=include_math_map)
+    for word in exclude or []:
+        srsearch += " -" + _quote_for_search(word)  # leave out articles that mention it
     params = {
         "action": "query",
         "list": "search",
@@ -203,20 +206,70 @@ def _bing_search(query: str) -> List[Tuple[str, str]]:
     return out
 
 
-def sports_search(term: str, sites: Optional[List[str]] = None, max_results: int = 40) -> List[Tuple[str, str]]:
+def _bing_news(query: str) -> List[Tuple[str, str]]:
+    """Bing News RSS. News search indexes the article text, so it finds stories that
+    mention the term in passing, not just ones with it in the headline."""
+    import requests
+    import xml.etree.ElementTree as ET
+    r = requests.get("https://www.bing.com/news/search", params={"q": query, "format": "rss", "count": 50},
+                     headers={"User-Agent": BROWSER_UA}, timeout=30)
+    r.raise_for_status()
+    out: List[Tuple[str, str]] = []
+    for item in ET.fromstring(r.content).iter("item"):
+        link = (item.findtext("link") or "").strip()
+        if "apiclick.aspx" in link:  # tracking redirect; the real address is in ?url=
+            link = urllib.parse.parse_qs(urllib.parse.urlparse(link).query).get("url", [link])[0]
+        title = (item.findtext("title") or "").strip()
+        if link:
+            out.append((title or link, link))
+    return out
+
+
+def mentions_excluded(text: str, exclude: Optional[List[str]]) -> Optional[str]:
+    low = text.lower()
+    for word in exclude or []:
+        if word and word.lower() in low:
+            return word
+    return None
+
+
+def iter_sports_articles(term: str, sites: Optional[List[str]] = None, max_results: int = 200,
+                         exclude: Optional[List[str]] = None):
     """
-    Find articles about `term` on sports blogs/news sites.
-    Queries a few sites at a time and interleaves results so you get variety.
+    Yield batches of sports articles about `term`, searching wider each round so
+    the caller can stop as soon as it has enough screenshots:
+      1. web search, a few sites at a time (mostly articles with the term in the title)
+      2. news search, one site at a time (articles that mention it anywhere in the text)
+      3. news search across all of those sites at once
+    Results are interleaved across sites so one site doesn't dominate.
     """
     import time
     sites = [s.strip() for s in (sites or DEFAULT_SPORTS_SITES) if s.strip()]
-    by_site: dict = {s: [] for s in sites}
-    seen = set()
-    chunk = 3
-    for k in range(0, len(sites), chunk):
-        group = sites[k:k + chunk]
-        query = _quote_for_search(term) + " (" + " OR ".join(f"site:{s}" for s in group) + ")"
-        results: List[Tuple[str, str]] = []
+    seen: set = set()
+    total = 0
+
+    def collect(results: List[Tuple[str, str]], allowed: List[str], by_site: dict) -> None:
+        for title, url in results:
+            site = _host_matches(url, allowed)
+            key = url.split("#")[0].split("?")[0].rstrip("/")
+            if not site or key in seen or url.lower().endswith(".pdf"):
+                continue
+            seen.add(key)
+            word = mentions_excluded(title + " " + url, exclude)
+            if word:
+                print(f"[skip] Leaving out (mentions '{word}'): {title}")
+                continue
+            by_site[site].append((title, url))
+
+    def interleave(by_site: dict) -> List[Tuple[str, str]]:
+        out: List[Tuple[str, str]] = []
+        while any(by_site.values()):
+            for s in sites:
+                if by_site[s]:
+                    out.append(by_site[s].pop(0))
+        return out
+
+    def web(query: str) -> List[Tuple[str, str]]:
         for engine in (_ddg_search, _bing_search):
             try:
                 results = engine(query)
@@ -224,23 +277,44 @@ def sports_search(term: str, sites: Optional[List[str]] = None, max_results: int
                 print(f"[warn] {engine.__name__.strip('_')} failed: {e}")
                 results = []
             if results:
-                break
-        for title, url in results:
-            site = _host_matches(url, group)
-            key = url.split("#")[0].rstrip("/")
-            if not site or key in seen or url.lower().endswith(".pdf"):
-                continue
-            seen.add(key)
-            by_site[site].append((title, url))
-        time.sleep(1.0)  # be polite to the search engines
+                return results
+        return []
 
-    # Round-robin across sites so one site doesn't dominate
+    def news(query: str) -> List[Tuple[str, str]]:
+        try:
+            return _bing_news(query)
+        except Exception as e:
+            print(f"[warn] news search failed: {e}")
+            return []
+
+    q = _quote_for_search(term)
+    rounds = [
+        ("Searching sports sites", [(web, q + " (" + " OR ".join(f"site:{s}" for s in sites[k:k + 3]) + ")", sites[k:k + 3])
+                                    for k in range(0, len(sites), 3)]),
+        ("Looking for articles that mention it in the story", [(news, f"{q} site:{s}", [s]) for s in sites]),
+        ("Searching recent news", [(news, q, sites)]),
+    ]
+    for label, queries in rounds:
+        print(f"[search] {label}...")
+        by_site: dict = {s: [] for s in sites}
+        for fn, query, allowed in queries:
+            collect(fn(query), allowed, by_site)
+            time.sleep(1.5)  # be polite to the search engines
+        batch = interleave(by_site)[:max(0, max_results - total)]
+        if batch:
+            total += len(batch)
+            print(f"[search] Found {len(batch)} more articles ({total} total)")
+            yield batch
+        if total >= max_results:
+            return
+
+
+def sports_search(term: str, sites: Optional[List[str]] = None, max_results: int = 40,
+                  exclude: Optional[List[str]] = None) -> List[Tuple[str, str]]:
+    """All rounds of iter_sports_articles as one list."""
     out: List[Tuple[str, str]] = []
-    while len(out) < max_results and any(by_site.values()):
-        for s in sites:
-            if by_site[s] and len(out) < max_results:
-                out.append(by_site[s].pop(0))
-    print(f"[search] Found {len(out)} sports articles for '{term}'")
+    for batch in iter_sports_articles(term, sites, max_results=max_results, exclude=exclude):
+        out += batch
     return out
 
 
@@ -262,6 +336,27 @@ FLUSH_LAYOUT_JS = r"""
 MARK_MATCHES_JS = r"""
 (opts => {
   const { term, caseSensitive, wholeWord, maxMatches, highlightAll } = opts;
+  const exclude = (opts.exclude || []).map(w => w.toLowerCase()).filter(Boolean);
+  const countOf = (hay, needle) => { let c = 0, i = 0; while ((i = hay.indexOf(needle, i)) !== -1) { c++; i += needle.length; } return c; };
+
+  // Excluded words: skip pages that are mainly about them (they come up at least as
+  // often as the search term in the article itself, ignoring menus and sidebars)
+  if (exclude.length) {
+    const main = document.querySelector('article, main, [role="main"], #mw-content-text') || document.body;
+    const text = (main.innerText || '').toLowerCase();
+    const termCount = countOf(text, term.toLowerCase());
+    for (const w of exclude) {
+      const c = countOf(text, w);
+      if (c >= 3 && c >= termCount) return { ids: [], excluded: w };
+    }
+  }
+  const BLOCK = 'p,li,td,th,h1,h2,h3,h4,h5,h6,blockquote,figcaption,dd,dt,caption';
+  const blockMentionsExcluded = el => {
+    if (!exclude.length) return false;
+    const b = el.closest(BLOCK) || el;
+    const t = (b.textContent || '').toLowerCase();
+    return exclude.some(w => t.includes(w));
+  };
 
   function isWordChar(ch) { return !!ch && /[\p{L}\p{N}_]/u.test(ch); }
   function normalizeSpaces(str) { return String(str).replace(/[\s\u00A0]/g, ' '); }
@@ -287,6 +382,9 @@ MARK_MATCHES_JS = r"""
 
     let t = normalizeSpaces(n.nodeValue || '');
     if (!t) continue;
+    // Skip matches in a paragraph that mentions an excluded word
+    if (exclude.length && (caseSensitive ? t : t.toLowerCase()).includes(caseSensitive ? term : term.toLowerCase())
+        && blockMentionsExcluded(n.parentElement)) continue;
 
     const hay = caseSensitive ? t : t.toLowerCase();
     const needle = caseSensitive ? term : term.toLowerCase();
@@ -338,7 +436,7 @@ MARK_MATCHES_JS = r"""
       document.head.appendChild(style);
     }
   }
-  return ids;
+  return { ids, excluded: null };
 })
 """
 
@@ -389,6 +487,24 @@ GET_VIEWPORT_RECT_JS = r"""
 }
 """
 
+# Is the word actually drawn on screen? Catches text that's "visible" to the DOM but
+# hidden in practice: clipped carousels, collapsed sections, covered by an overlay.
+HIT_TEST_JS = r"""
+(id) => {
+  const el = document.getElementById(id);
+  if (!el) return false;
+  const r = el.getBoundingClientRect();
+  if (r.width < 1 || r.height < 1) return false;
+  // A see-through parent (e.g. a page that fades in once its scripts load) hides it too
+  if (el.checkVisibility && !el.checkVisibility({opacityProperty: true, visibilityProperty: true})) return false;
+  const pts = [[0.5, 0.5], [0.25, 0.5], [0.75, 0.5]];
+  return pts.some(([fx, fy]) => {
+    const hit = document.elementFromPoint(r.left + r.width * fx, r.top + r.height * fy);
+    return !!hit && (hit === el || el.contains(hit));
+  });
+}
+"""
+
 SCROLL_TO_CENTER_JS = r"""
 (id) => { const el = document.getElementById(id); if (el) el.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'}); }
 """
@@ -425,7 +541,36 @@ def capture_wiki_screenshots(
     settle_ms: int = 60,
     max_total_matches: Optional[int] = None,
     start_index: int = 1,
+    exclude: Optional[List[str]] = None,
+    skip: Optional[dict] = None,
+    indices: Optional[List[int]] = None,
+    capped: Optional[list] = None,
+    seen_hashes: Optional[set] = None,
 ) -> List[dict]:
+    """
+    exclude: leave out pages/paragraphs about these words.
+    skip:    {url: n} — matches already captured on that page (for a second visit).
+    indices: page numbers to use in file names (default: start_index, start_index+1, ...).
+    capped:  if given, pages that had more matches than max_matches_per_page are
+             appended as (title, url, index, matches_taken) so the caller can come back.
+    """
+    skip = skip or {}
+    seen_hashes = seen_hashes if seen_hashes is not None else set()
+
+    def is_duplicate(fpath: str) -> bool:
+        """Identical to a shot we already have (e.g. a name repeated in the same layout)? Then drop it."""
+        import hashlib
+        try:
+            with open(fpath, "rb") as fh:
+                digest = hashlib.md5(fh.read()).hexdigest()
+        except OSError:
+            return False
+        if digest in seen_hashes:
+            os.remove(fpath)
+            print("[skip] Same as an earlier screenshot")
+            return True
+        seen_hashes.add(digest)
+        return False
     if sync_playwright is None:
         raise RuntimeError("playwright not installed. `pip install playwright` and run `playwright install chromium`.")
 
@@ -485,6 +630,14 @@ def capture_wiki_screenshots(
             r = page.evaluate(GET_VIEWPORT_RECT_JS, mid)
             if not r or r["w"] <= 0 or r["h"] <= 0:
                 return None
+            for _ in range(8):  # pages often fade in after loading; give it up to ~2 s
+                if page.evaluate(HIT_TEST_JS, mid):
+                    break
+                page.wait_for_timeout(250)
+            else:
+                print("[skip] Match is hidden on the page (carousel, collapsed section or overlay)")
+                return None
+            r = page.evaluate(GET_VIEWPORT_RECT_JS, mid)  # may have moved while fading in
             cx = float(r["x"]) + float(r["w"]) / 2.0
             cy = float(r["y"]) + float(r["h"]) / 2.0
             x = q(max(0.0, min(cx - cw / 2.0, need["width"] - cw)))
@@ -492,9 +645,14 @@ def capture_wiki_screenshots(
             page.screenshot(path=fpath, clip={"x": x, "y": y, "width": cw, "height": ch})
             return {"path": fpath, "dx_css": cx - (x + cw / 2.0), "dy_css": cy - (y + ch / 2.0), "cw_css": cw, "ch_css": ch}
 
-        for i, (title, url) in enumerate(pages, start_index):
+        for n_page, (title, url) in enumerate(pages):
+            i = indices[n_page] if indices else start_index + n_page
             if max_total_matches is not None and len(saved) >= max_total_matches:
                 break
+            word = mentions_excluded(title + " " + url, exclude)
+            if word:
+                print(f"[skip] Leaving out (mentions '{word}'): {title}")
+                continue
             print(f"[page] {title} — {url}")
             wiki = _is_wikipedia(url)
             if page.viewport_size != {"width": vw, "height": vh}:
@@ -520,20 +678,30 @@ def capture_wiki_screenshots(
             if remaining is not None and remaining == 0:
                 break
             page_max = int(max_matches_per_page if remaining is None else min(max_matches_per_page, remaining))
+            already = int(skip.get(url, 0))
 
             try:
-                mark_ids = page.evaluate(MARK_MATCHES_JS, {
+                found = page.evaluate(MARK_MATCHES_JS, {
                     "term": term,
                     "caseSensitive": bool(case_sensitive),
                     "wholeWord": bool(whole_word),
-                    "maxMatches": page_max,
+                    "maxMatches": already + page_max + 1,  # +1 tells us whether there are more
                     "highlightAll": bool(highlight_all),
+                    "exclude": list(exclude or []),
                 })
             except Exception as e:
                 print(f"[skip] Could not scan {title}: {e}")
                 continue
+            if found.get("excluded"):
+                print(f"[skip] Leaving out (mostly about '{found['excluded']}'): {title}")
+                continue
+            all_ids = found.get("ids") or []
+            mark_ids = all_ids[already:already + page_max]
+            if capped is not None and len(all_ids) > already + page_max:
+                capped.append((title, url, i, already + len(mark_ids)))
             if not mark_ids:
-                print(f"[skip] No matches for '{term}' in {title}")
+                if not already:
+                    print(f"[skip] No matches for '{term}' in {title}")
                 continue
 
             page.evaluate(WAIT_FONTS_JS)
@@ -542,7 +710,7 @@ def capture_wiki_screenshots(
             dims = page_dims()
             page_w, page_h = float(dims["w"]), float(dims["h"])
 
-            for j, mid in enumerate(mark_ids, 1):
+            for j, mid in enumerate(mark_ids, already + 1):
                 if max_total_matches is not None and len(saved) >= max_total_matches:
                     break
 
@@ -553,9 +721,9 @@ def capture_wiki_screenshots(
                     except Exception as e:
                         print(f"[skip] Screenshot failed on {title}: {e}")
                         continue
-                    if shot:
+                    if shot and not is_duplicate(shot["path"]):
                         saved.append(shot)
-                        print(f"[ok] {title} [{j}/{len(mark_ids)}] -> {fname} (residual: {shot['dx_css']:.3f}, {shot['dy_css']:.3f})")
+                        print(f"[ok] {title} [{j}/{already + len(mark_ids)}] -> {fname} (residual: {shot['dx_css']:.3f}, {shot['dy_css']:.3f})")
                     continue
 
                 r = page.evaluate(GET_RECT_JS, mid)
@@ -655,11 +823,13 @@ def capture_wiki_screenshots(
                             raise RuntimeError("Failed to create capture element")
                         handle.screenshot(path=fpath, omit_background=True)
                         page.evaluate("(id) => { const el = document.getElementById(id); if (el) el.remove(); }", elem_id)
-                        print(f"[ok/element] {title} [{j}/{len(mark_ids)}] -> {fname}")
+                        print(f"[ok/element] {title} [{j}/{already + len(mark_ids)}] -> {fname}")
                     else:
                         print(f"[skip] Screenshot failed on {title}: {e}")
                         continue
 
+                if is_duplicate(fpath):
+                    continue
                 saved.append({
                     "path": fpath,
                     "dx_css": float(res_dx),
@@ -667,7 +837,7 @@ def capture_wiki_screenshots(
                     "cw_css": float(cw),
                     "ch_css": float(ch),
                 })
-                print(f"[ok] {title} [{j}/{len(mark_ids)}] -> {fname} (residual: {res_dx:.3f}, {res_dy:.3f})")
+                print(f"[ok] {title} [{j}/{already + len(mark_ids)}] -> {fname} (residual: {res_dx:.3f}, {res_dy:.3f})")
 
         context.close()
         browser.close()
@@ -866,8 +1036,12 @@ def main():
                     help="Where to find pages: Wikipedia, sports blogs/news sites, or both mixed together")
     ap.add_argument("--sports-sites", default=",".join(DEFAULT_SPORTS_SITES),
                     help="Comma-separated sports sites to search when --source is sports/both")
-    ap.add_argument("--max-articles", type=int, default=40,
-                    help="Max sports articles to visit when --source is sports/both")
+    ap.add_argument("--max-articles", type=int, default=200,
+                    help="Safety limit on sports articles to visit when --source is sports/both "
+                         "(it stops sooner once it has enough screenshots)")
+    ap.add_argument("--exclude", default="",
+                    help="Comma-separated words to leave out, e.g. 'basketball,recruiting'. Skips articles "
+                         "about them and matches in paragraphs that mention them")
 
     args = ap.parse_args()
 
@@ -876,62 +1050,101 @@ def main():
     os.makedirs(screens_dir, exist_ok=True)
     print(f"[info] Saving to {outdir}")
 
-    def page_batches():
-        wiki_kw = dict(limit=args.limit, search_in=args.search_in, include_math_map=(not args.no_math_map))
-        sports: List[Tuple[str, str]] = []
-        if args.source in ("sports", "both"):
-            print(f"[search] Searching sports sites for '{args.term}'...")
-            sports = sports_search(args.term, args.sports_sites.split(","), max_results=args.max_articles)
-            if args.source == "sports":
-                if sports:
-                    yield sports
-                return
+    exclude = [w.strip() for w in args.exclude.split(",") if w.strip()]
+    if exclude:
+        print(f"[info] Leaving out anything about: {', '.join(exclude)}")
+
+    def wiki_batches():
         offset = 0
         while True:
-            pages = wiki_search_batch(args.term, offset=offset, **wiki_kw)
-            if offset == 0 and sports:
-                # Mix blog articles in with the first Wikipedia batch
-                mixed: List[Tuple[str, str]] = []
-                for k in range(max(len(pages), len(sports))):
-                    mixed += pages[k:k + 1] + sports[k:k + 1]
-                pages_to_capture = mixed
-            else:
-                pages_to_capture = pages
-            if not pages_to_capture:
+            pages = wiki_search_batch(args.term, offset=offset, limit=args.limit, search_in=args.search_in,
+                                      include_math_map=(not args.no_math_map), exclude=exclude)
+            if not pages:
                 return
-            yield pages_to_capture
+            yield pages
             offset += len(pages)
             if len(pages) < args.limit:
                 return
 
-    images: List[dict] = []
-    page_index = 1
-    for pages in page_batches():
-        remaining = None if args.max_total_matches is None else max(0, args.max_total_matches - len(images))
-        if remaining is not None and remaining == 0:
-            break
+    def page_batches():
+        """Batches of pages to visit, searching wider each time; stops being asked once we have enough."""
+        sources = []
+        if args.source in ("wikipedia", "both"):
+            sources.append(wiki_batches())
+        if args.source in ("sports", "both"):
+            sources.append(iter_sports_articles(args.term, args.sports_sites.split(","),
+                                                max_results=args.max_articles, exclude=exclude))
+        while sources:  # alternate between sources when mixing ("both")
+            for src in list(sources):
+                batch = next(src, None)
+                if batch is None:
+                    sources.remove(src)
+                else:
+                    yield batch
 
+    target = args.max_total_matches
+    common = dict(
+        frame_size=(args.width, args.height),
+        case_sensitive=(not args.ignore_case),
+        whole_word=(not args.no_whole_word),
+        dpr=args.dpr,
+        target_word_px=args.target_word_px,
+        framing_zoom=args.framing_zoom,
+        center_eps_px=args.center_eps_px,
+        center_max_iter=args.center_max_iter,
+        pad_to_center=args.pad_to_center,
+        highlight_all=args.highlight_all,
+        settle_ms=args.settle_ms,
+        exclude=exclude,
+    )
+
+    images: List[dict] = []
+    visited: set = set()
+    capped: list = []  # pages with more matches than --max-matches-per-page
+    seen_hashes: set = set()  # drop identical frames
+    page_index = 1
+    batches = page_batches()
+    while True:
+        remaining = None if target is None else max(0, target - len(images))
+        if remaining == 0:
+            break  # check before searching further, so we don't run an extra search round
+        pages = next(batches, None)
+        if pages is None:
+            break
+        pages = [(t, u) for t, u in pages if u not in visited]
+        visited.update(u for _, u in pages)
+        if not pages:
+            continue
         imgs = capture_wiki_screenshots(
-            pages,
-            args.term,
-            screens_dir,
-            frame_size=(args.width, args.height),
+            pages, args.term, screens_dir,
             max_matches_per_page=args.max_matches_per_page if remaining is None else min(args.max_matches_per_page, remaining),
-            case_sensitive=(not args.ignore_case),
-            whole_word=(not args.no_whole_word),
-            dpr=args.dpr,
-            target_word_px=args.target_word_px,
-            framing_zoom=args.framing_zoom,
-            center_eps_px=args.center_eps_px,
-            center_max_iter=args.center_max_iter,
-            pad_to_center=args.pad_to_center,
-            highlight_all=args.highlight_all,
-            settle_ms=args.settle_ms,
-            max_total_matches=remaining,
-            start_index=page_index,
+            max_total_matches=remaining, start_index=page_index, capped=capped, seen_hashes=seen_hashes, **common,
         )
         images.extend(imgs)
         page_index += len(pages)
+        print(f"[progress] {len(images)}" + (f" of {target}" if target else "") + " screenshots")
+
+    # Ran out of articles? Go back to pages that had more matches than we took.
+    while target and len(images) < target and capped:
+        print(f"[search] No more new articles; taking extra shots from {len(capped)} pages that had more matches...")
+        revisit, capped = capped, []
+        before = len(images)
+        imgs = capture_wiki_screenshots(
+            [(t, u) for t, u, _, _ in revisit], args.term, screens_dir,
+            # Spread what's still needed across these pages so each is visited once
+            max_matches_per_page=max(args.max_matches_per_page, -(-(target - len(images)) // len(revisit))),
+            max_total_matches=target - len(images),
+            indices=[i for _, _, i, _ in revisit], skip={u: n for _, u, _, n in revisit}, capped=capped,
+            seen_hashes=seen_hashes, **common,
+        )
+        images.extend(imgs)
+        print(f"[progress] {len(images)} of {target} screenshots")
+        if len(images) == before:
+            break
+
+    if target and 0 < len(images) < target:
+        print(f"[warn] Only found {len(images)} of {target} screenshots: there were no more matching articles."
+              + (" Leaving out fewer words may find more." if exclude else ""))
 
     if not images:
         hint = " Try turning off case-sensitive/whole-word matching, or a different source." if args.source != "wikipedia" else " Try --ignore-case, --search-in both, or --source sports."
