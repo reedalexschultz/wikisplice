@@ -30,6 +30,14 @@ UI_FILE = os.path.join(HERE, "ui", "index.html")
 
 sys.path.insert(0, HERE)
 from wikisplice import DEFAULT_SPORTS_SITES, OUTPUT_ROOT, default_run_dir  # noqa: E402
+import updater  # noqa: E402
+
+PORT = 8765  # set in main(); reused when restarting after an update
+
+
+def restart_app() -> None:
+    """Replace this process with a fresh copy of the app (same port), so an update takes effect."""
+    os.execv(sys.executable, [sys.executable, os.path.join(HERE, "app.py"), "--port", str(PORT), "--no-browser"])
 
 
 # ------------------------------
@@ -169,7 +177,8 @@ def build_argv(o: dict) -> tuple[list[str], str, int]:
     if not o.get("whole_word", True):
         argv.append("--no-whole-word")
     for key, flag in (("highlight_all", "--highlight-all"), ("pad_to_center", "--pad-to-center"),
-                      ("no_math_map", "--no-math-map"), ("run_ae", "--run-ae")):
+                      ("no_math_map", "--no-math-map"), ("run_ae", "--run-ae"),
+                      ("transparent", "--transparent")):
         if o.get(key):
             argv.append(flag)
     if o.get("run_ae"):
@@ -229,6 +238,11 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/info":
             self._json({"sports_sites": DEFAULT_SPORTS_SITES, "ae_versions": find_after_effects(),
                         "output_root": OUTPUT_ROOT})
+        elif path == "/api/update/check":
+            try:
+                self._json(updater.check())
+            except Exception as e:  # offline, GitHub down, rate limited... just don't show a banner
+                self._json({"available": False, "error": str(e)})
         elif path == "/api/status":
             since = int(urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("since", ["0"])[0])
             with JOB.lock:
@@ -260,6 +274,16 @@ class Handler(BaseHTTPRequestHandler):
                 argv, outdir, target = build_argv(body)
                 JOB.start(argv, outdir, target)
                 self._json({"ok": True})
+            elif path == "/api/update/apply":
+                # Only reached when the user clicked "Update now"
+                if JOB.running:
+                    return self._json({"error": "Wait for the current search to finish (or press Stop) first."}, 409)
+                result = updater.apply()
+                if result["requirements_changed"]:
+                    subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "-r",
+                                    os.path.join(HERE, "requirements.txt")], check=False)
+                self._json({"ok": True, **result})
+                threading.Timer(1.0, restart_app).start()  # after the reply reaches the page
             elif path == "/api/stop":
                 JOB.stop()
                 self._json({"ok": True})
@@ -301,6 +325,8 @@ def main() -> None:
     else:
         sys.exit("Could not find a free port.")
 
+    global PORT
+    PORT = port
     url = f"http://127.0.0.1:{port}"
     print(f"\n  WikiSplice is running at {url}\n  (Leave this window open. Close it or press Ctrl+C to quit.)\n", flush=True)
     if not args.no_browser:

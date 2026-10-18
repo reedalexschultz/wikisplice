@@ -28,10 +28,13 @@ if ! .venv/bin/python -c "import sys" >/dev/null 2>&1; then
   fi
 fi
 
-if ! .venv/bin/python -c "import playwright, requests" >/dev/null 2>&1; then
+# (Re)install packages if missing, or if requirements.txt changed (e.g. after an update)
+REQ_HASH=$(shasum requirements.txt | cut -d" " -f1)
+if ! .venv/bin/python -c "import playwright, requests" >/dev/null 2>&1 || [ "$(cat .venv/.requirements-hash 2>/dev/null)" != "$REQ_HASH" ]; then
   echo "Installing required packages..."
   .venv/bin/python -m pip install --quiet --upgrade pip
   .venv/bin/python -m pip install --quiet -r requirements.txt || { read -n 1 -s -r -p "Install failed. Press any key to close."; exit 1; }
+  echo "$REQ_HASH" > .venv/.requirements-hash
 fi
 
 # Downloads the screenshot browser the first time; instant afterwards.

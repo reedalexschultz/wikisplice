@@ -59,6 +59,16 @@ Old runs stay until you delete them yourself. After Effects links to these PNGs 
 
 Click **Show files** in the app to open the folder. To build the video by hand, open After Effects and choose **File → Scripts → Run Script File…**, then pick the `.jsx` file.
 
+### Getting updates
+
+If you downloaded wikisplice as a ZIP, the app checks GitHub for a newer version each time it opens. When there is one, a banner shows what changed with **Update now** and **Not now** buttons. Nothing changes unless you click **Update now**.
+
+Updating replaces only wikisplice's own files, and saves the old copies in `.update-backup/` first. It never touches your `output/` folder, settings or Python setup, and it doesn't delete anything. The app restarts itself when it's done. **Not now** hides the banner until a newer version comes out.
+
+From the terminal, run `python updater.py`; it checks and then asks before changing anything. If you cloned the repository with git, use `git pull` instead (the app won't offer updates in a git clone).
+
+> Copies downloaded before this feature existed need to be downloaded again once to get it.
+
 ---
 
 ## Command line (for power users)
@@ -131,7 +141,8 @@ python wikisplice.py --term "Paul Skenes" --source sports --max-total-matches 30
 
 - `--center-eps-px` (default: `0.05`) - Maximum acceptable centering error in CSS pixels
 - `--center-max-iter` (default: `6`) - Maximum iterations for centering refinement
-- `--pad-to-center` - Add padding to pages to achieve perfect vertical centering
+- `--pad-to-center` - No longer needed: words near the top or bottom of a page always get blank space added so they're centered
+- `--transparent` - Wikipedia: transparent page background instead of white, for laying shots over other footage
 - `--settle-ms` (default: `60`) - Milliseconds to wait for page layout to stabilize
 
 ## Command-Line Examples

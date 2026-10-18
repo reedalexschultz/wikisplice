@@ -6,3 +6,6 @@ wiki_collage/
 
 __pycache__/
 .DS_Store
+
+# Copies of files replaced by the updater
+.update-backup/

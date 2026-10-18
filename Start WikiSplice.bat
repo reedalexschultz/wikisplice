@@ -13,9 +13,13 @@ if errorlevel 1 (
     exit /b 1
   )
 )
-".venv\Scripts\python.exe" -c "import playwright, requests" 2>nul || (
+rem (Re)install packages if missing, or if requirements.txt changed (e.g. after an update)
+set NEEDS_INSTALL=0
+".venv\Scripts\python.exe" -c "import playwright, requests" 2>nul || set NEEDS_INSTALL=1
+fc /b requirements.txt ".venv\requirements.installed" >nul 2>&1 || set NEEDS_INSTALL=1
+if "%NEEDS_INSTALL%"=="1" (
   echo Installing required packages...
-  ".venv\Scripts\python.exe" -m pip install --quiet -r requirements.txt
+  ".venv\Scripts\python.exe" -m pip install --quiet -r requirements.txt && copy /y requirements.txt ".venv\requirements.installed" >nul
 )
 ".venv\Scripts\python.exe" -m playwright install chromium
 ".venv\Scripts\python.exe" app.py

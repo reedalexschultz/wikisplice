@@ -441,9 +441,10 @@ MARK_MATCHES_JS = r"""
 """
 
 WIKI_CLEANUP_JS = r"""
-() => {
+(transparent) => {
   const hide = sel => { Array.from(document.querySelectorAll(sel)).forEach((el) => el.style.display = 'none'); };
   hide('#mw-panel'); hide('#vector-toc'); hide('#siteNotice'); hide('.vector-page-toolbar');
+  if (!transparent) { document.documentElement.style.background = '#fff'; return; }
   const html = document.documentElement;
   const body = document.body;
   html.style.background = 'transparent';
@@ -505,19 +506,18 @@ HIT_TEST_JS = r"""
 }
 """
 
-SCROLL_TO_CENTER_JS = r"""
-(id) => { const el = document.getElementById(id); if (el) el.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'}); }
-"""
-
-GET_RECT_JS = r"""
-(id) => {
-  const el = document.getElementById(id);
-  if (!el) return null;
-  const r = el.getBoundingClientRect();
-  return { x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height };
+# Add blank space above/below the page content (added to any padding from earlier matches)
+ADD_PAGE_PADDING_JS = r"""
+([top, bottom]) => {
+  const s = document.body.style;
+  s.paddingTop = (parseFloat(s.paddingTop) || 0) + top + 'px';
+  s.paddingBottom = (parseFloat(s.paddingBottom) || 0) + bottom + 'px';
 }
 """
 
+SCROLL_TO_CENTER_JS = r"""
+(id) => { const el = document.getElementById(id); if (el) el.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'}); }
+"""
 
 # ------------------------------
 # Screenshot capture
@@ -546,6 +546,7 @@ def capture_wiki_screenshots(
     indices: Optional[List[int]] = None,
     capped: Optional[list] = None,
     seen_hashes: Optional[set] = None,
+    transparent: bool = False,
 ) -> List[dict]:
     """
     exclude: leave out pages/paragraphs about these words.
@@ -582,22 +583,6 @@ def capture_wiki_screenshots(
     def q(v: float) -> float:
         return max(1.0 / dpr, round(v * dpr) / dpr)
 
-    def clamp_crop(x: float, y: float, cw: float, ch: float, page_w: float, page_h: float):
-        if x < 0:
-            cw += x
-            x = 0.0
-        if y < 0:
-            ch += y
-            y = 0.0
-        if x + cw > page_w:
-            cw = page_w - x
-        if y + ch > page_h:
-            ch = page_h - y
-        min_css = 1.0 / max(1.0, float(dpr))
-        cw = max(min_css, cw)
-        ch = max(min_css, ch)
-        return q(x), q(y), q(cw), q(ch)
-
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         context = browser.new_context(viewport={"width": vw, "height": vh}, device_scale_factor=dpr, user_agent=BROWSER_UA)
@@ -606,14 +591,13 @@ def capture_wiki_screenshots(
         page = context.new_page()
         page.set_default_timeout(20000)
 
-        def page_dims():
-            return page.evaluate("() => ({w: document.documentElement.scrollWidth, h: document.documentElement.scrollHeight})")
-
-        def blog_shot(mid: str, fpath: str) -> Optional[dict]:
+        def centered_shot(mid: str, fpath: str) -> Optional[dict]:
             """
-            Blogs often scroll inside an inner container, so page coordinates are
-            unreliable. Instead: scroll the word to the middle of the window and
-            crop around it in window coordinates.
+            Scroll the word to the middle of the window and crop around it, so every
+            shot is exactly the frame's shape with the word dead center. (Page
+            coordinates are unreliable on blogs that scroll inside an inner container.)
+            Words too close to the top or bottom of a page get blank space added
+            there so they can still be centered.
             """
             r = page.evaluate(GET_VIEWPORT_RECT_JS, mid)
             if not r or r["w"] <= 0 or r["h"] <= 0:
@@ -638,11 +622,22 @@ def capture_wiki_screenshots(
                 print("[skip] Match is hidden on the page (carousel, collapsed section or overlay)")
                 return None
             r = page.evaluate(GET_VIEWPORT_RECT_JS, mid)  # may have moved while fading in
+            cy = float(r["y"]) + float(r["h"]) / 2.0
+            short_top = ch / 2.0 - cy                          # word too close to the top of the page
+            short_bottom = cy + ch / 2.0 - need["height"]      # ...or to the bottom
+            if short_top > 0.5 or short_bottom > 0.5:
+                page.evaluate(ADD_PAGE_PADDING_JS, [max(0.0, short_top) + 2, max(0.0, short_bottom) + 2])
+                page.wait_for_timeout(max(settle_ms, 100))
+                page.evaluate(SCROLL_TO_CENTER_JS, mid)
+                page.wait_for_timeout(max(settle_ms, 100))
+                r = page.evaluate(GET_VIEWPORT_RECT_JS, mid)
+                if not r or r["w"] <= 0 or r["h"] <= 0:
+                    return None
             cx = float(r["x"]) + float(r["w"]) / 2.0
             cy = float(r["y"]) + float(r["h"]) / 2.0
             x = q(max(0.0, min(cx - cw / 2.0, need["width"] - cw)))
             y = q(max(0.0, min(cy - ch / 2.0, need["height"] - ch)))
-            page.screenshot(path=fpath, clip={"x": x, "y": y, "width": cw, "height": ch})
+            page.screenshot(path=fpath, clip={"x": x, "y": y, "width": cw, "height": ch}, omit_background=bool(transparent))
             return {"path": fpath, "dx_css": cx - (x + cw / 2.0), "dy_css": cy - (y + ch / 2.0), "cw_css": cw, "ch_css": ch}
 
         for n_page, (title, url) in enumerate(pages):
@@ -667,7 +662,10 @@ def capture_wiki_screenshots(
                     except Exception:
                         pass
                     page.wait_for_timeout(800)
-                page.evaluate(WIKI_CLEANUP_JS if wiki else BLOG_CLEANUP_JS)
+                if wiki:
+                    page.evaluate(WIKI_CLEANUP_JS, bool(transparent))
+                else:
+                    page.evaluate(BLOG_CLEANUP_JS)
             except Exception as e:
                 print(f"[skip] Failed to load {title}: {e}")
                 continue
@@ -707,137 +705,20 @@ def capture_wiki_screenshots(
             page.evaluate(WAIT_FONTS_JS)
             page.evaluate(FLUSH_LAYOUT_JS)
 
-            dims = page_dims()
-            page_w, page_h = float(dims["w"]), float(dims["h"])
-
             for j, mid in enumerate(mark_ids, already + 1):
                 if max_total_matches is not None and len(saved) >= max_total_matches:
                     break
 
-                if not wiki:
-                    fname = f"{i:03d}_{j:02d}_" + _safe_slug(title) + ".png"
-                    try:
-                        shot = blog_shot(mid, _abs(os.path.join(outdir, fname)))
-                    except Exception as e:
-                        print(f"[skip] Screenshot failed on {title}: {e}")
-                        continue
-                    if shot and not is_duplicate(shot["path"]):
-                        saved.append(shot)
-                        print(f"[ok] {title} [{j}/{already + len(mark_ids)}] -> {fname} (residual: {shot['dx_css']:.3f}, {shot['dy_css']:.3f})")
-                    continue
-
-                r = page.evaluate(GET_RECT_JS, mid)
-                if not r or r["w"] <= 0 or r["h"] <= 0:
-                    continue
-
-                w_word = float(r["w"])
-                cx = float(r["x"]) + w_word / 2.0
-                cy = float(r["y"]) + float(r["h"]) / 2.0
-
-                cw = max(32.0, (vw * (w_word / max(1.0, float(target_word_px)))))
-                ch = cw / aspect
-
-                z = max(0.25, float(framing_zoom))
-                cw *= z
-                ch = cw / aspect
-
-                cw = q(cw); ch = q(ch)
-
-                desired_x = cx - cw / 2.0
-                desired_y = cy - ch / 2.0
-
-                if pad_to_center:
-                    dims = page_dims()
-                    page_w, page_h = float(dims["w"]), float(dims["h"])
-                    pad_top    = max(0.0, -desired_y)
-                    pad_bottom = max(0.0, desired_y + ch - page_h)
-                    if pad_top or pad_bottom:
-                        page.evaluate("""(pads) => {
-                            const [t, b] = pads;
-                            const s = document.body.style;
-                            s.paddingTop   = `${t}px`;
-                            s.paddingBottom= `${b}px`;
-                        }""", [pad_top, pad_bottom])
-                        page.wait_for_timeout(settle_ms)
-                        page.evaluate(WAIT_FONTS_JS)
-                        page.evaluate(FLUSH_LAYOUT_JS)
-                        r = page.evaluate(GET_RECT_JS, mid)
-                        if not r or r["w"] <= 0 or r["h"] <= 0:
-                            continue
-                        w_word = float(r["w"])
-                        cx = float(r["x"]) + w_word / 2.0
-                        cy = float(r["y"]) + float(r["h"]) / 2.0
-                        desired_x = cx - cw / 2.0
-                        desired_y = cy - ch / 2.0
-
-                dims = page_dims()
-                page_w, page_h = float(dims["w"]), float(dims["h"])
-                x = max(0.0, min(desired_x, page_w - cw))
-                y = max(0.0, min(desired_y, page_h - ch))
-
-                for _ in range(int(center_max_iter)):
-                    vx = cx - (x + cw / 2.0)
-                    vy = cy - (y + ch / 2.0)
-                    if abs(vx) <= center_eps_px and abs(vy) <= center_eps_px:
-                        break
-                    x = max(0.0, min(x + vx, page_w - cw))
-                    y = max(0.0, min(y + vy, page_h - ch))
-
-                res_dx = cx - (x + cw/2.0)
-                res_dy = cy - (y + ch/2.0)
-
-                x, y, cw, ch = clamp_crop(x, y, cw, ch, page_w, page_h)
-
                 fname = f"{i:03d}_{j:02d}_" + _safe_slug(title) + ".png"
-                fpath = _abs(os.path.join(outdir, fname))
-                clip = {"x": float(x), "y": float(y), "width": float(cw), "height": float(ch)}
                 try:
-                    page.screenshot(path=fpath, clip=clip, omit_background=True)
+                    shot = centered_shot(mid, _abs(os.path.join(outdir, fname)))
                 except Exception as e:
-                    msg = str(e)
-                    if "Clipped area is either empty or outside the resulting image" in msg or "outside the resulting image" in msg:
-                        elem_id = f"py_capture_{i}_{j}_{int(x)}_{int(y)}"
-                        page.evaluate("""(cfg) => {
-                            const {id,x,y,w,h} = cfg;
-                            let el = document.getElementById(id);
-                            if (!el) {
-                              el = document.createElement('div');
-                              el.id = id;
-                              document.body.appendChild(el);
-                            }
-                            Object.assign(el.style, {
-                              position: 'absolute',
-                              left: x + 'px',
-                              top: y + 'px',
-                              width: w + 'px',
-                              height: h + 'px',
-                              background: 'transparent',
-                              outline: 'none',
-                              pointerEvents: 'none',
-                              zIndex: '2147483647',
-                              transform: 'translateZ(0)'
-                            });
-                        }""", {"id": elem_id, "x": clip["x"], "y": clip["y"], "w": clip["width"], "h": clip["height"]})
-                        handle = page.query_selector(f"#{elem_id}")
-                        if handle is None:
-                            raise RuntimeError("Failed to create capture element")
-                        handle.screenshot(path=fpath, omit_background=True)
-                        page.evaluate("(id) => { const el = document.getElementById(id); if (el) el.remove(); }", elem_id)
-                        print(f"[ok/element] {title} [{j}/{already + len(mark_ids)}] -> {fname}")
-                    else:
-                        print(f"[skip] Screenshot failed on {title}: {e}")
-                        continue
-
-                if is_duplicate(fpath):
+                    print(f"[skip] Screenshot failed on {title}: {e}")
                     continue
-                saved.append({
-                    "path": fpath,
-                    "dx_css": float(res_dx),
-                    "dy_css": float(res_dy),
-                    "cw_css": float(cw),
-                    "ch_css": float(ch),
-                })
-                print(f"[ok] {title} [{j}/{already + len(mark_ids)}] -> {fname} (residual: {res_dx:.3f}, {res_dy:.3f})")
+                if shot and not is_duplicate(shot["path"]):
+                    saved.append(shot)
+                    print(f"[ok] {title} [{j}/{already + len(mark_ids)}] -> {fname} (residual: {shot['dx_css']:.3f}, {shot['dy_css']:.3f})")
+
 
         context.close()
         browser.close()
@@ -897,7 +778,8 @@ def write_jsx(
     it.parentFolder = folder;
     var L = comp.layers.add(it);
     L.startTime = i*{shot_dur};
-    L.outPoint  = comp.duration;
+    // Each shot is on screen only until the next one starts (the last one holds to the end)
+    L.outPoint  = (i == items.length - 1) ? comp.duration : Math.min(comp.duration, L.startTime + {shot_dur});
     scaleToFillAndCenter(L, {width}, {height}, {scale_pct}, rec.dx, rec.dy, {dpr});
     {"var S=L.property('Scale'); var sNow=S.value[0]; S.setValueAtTime(L.startTime,[sNow,sNow]); S.setValueAtTime(L.outPoint,[sNow*"+str(1.0+punch)+", sNow*"+str(1.0+punch)+"]); S.setInterpolationTypeAtKey(1, KeyframeInterpolationType.BEZIER); S.setInterpolationTypeAtKey(2, KeyframeInterpolationType.BEZIER);" if punch and punch>0 else ""}
   }}
@@ -1020,7 +902,7 @@ def main():
 
     ap.add_argument("--center-eps-px", type=float, default=0.05, help="Max center error (CSS px) after quantization")
     ap.add_argument("--center-max-iter", type=int, default=6, help="Re-center iterations")
-    ap.add_argument("--pad-to-center", action="store_true", help="Pad page top/bottom so the word is perfectly centered vertically")
+    ap.add_argument("--pad-to-center", action="store_true", help="(No longer needed: words near the top or bottom of a page are always padded so they're centered)")
 
     ap.add_argument("--settle-ms", type=int, default=60)
 
@@ -1039,6 +921,8 @@ def main():
     ap.add_argument("--max-articles", type=int, default=200,
                     help="Safety limit on sports articles to visit when --source is sports/both "
                          "(it stops sooner once it has enough screenshots)")
+    ap.add_argument("--transparent", action="store_true",
+                    help="Wikipedia: transparent page background instead of white (for compositing over other footage)")
     ap.add_argument("--exclude", default="",
                     help="Comma-separated words to leave out, e.g. 'basketball,recruiting'. Skips articles "
                          "about them and matches in paragraphs that mention them")
@@ -1096,6 +980,7 @@ def main():
         highlight_all=args.highlight_all,
         settle_ms=args.settle_ms,
         exclude=exclude,
+        transparent=args.transparent,
     )
 
     images: List[dict] = []
